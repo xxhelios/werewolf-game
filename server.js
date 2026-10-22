@@ -8,6 +8,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 8;
 const RECONNECT_GRACE_PERIOD_MS = 5 * 60 * 1000;
+const READY_COUNTDOWN_SECONDS = 5;
 const CODE_CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const rooms = new Map();
 const buildDirectory = path.join(__dirname, 'dist');
@@ -51,7 +52,8 @@ function broadcastRoomState(room) {
             players: room.players.map(player => ({
                 id: player.id,
                 name: player.name,
-                isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
+                isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN),
+                isReady: room.started && room.readyPlayerIds.has(player.id)
             }))
         }
     };
@@ -61,6 +63,82 @@ function broadcastRoomState(room) {
 function broadcastRoomEvent(room, event) {
     const message = { type: 'room-event', ...event };
     room.players.forEach(player => send(player, message));
+}
+
+function connectedPlayers(room) {
+    return room.players.filter(player =>
+        player.socket && player.socket.readyState === WebSocket.OPEN
+    );
+}
+
+function broadcastGameProgress(room) {
+    const readyPlayerIds = [...room.readyPlayerIds];
+    const message = {
+        type: 'game-progress',
+        phase: room.phase,
+        readyPlayerIds,
+        countdownSeconds: room.countdownSeconds
+    };
+    room.players.forEach(player => send(player, message));
+}
+
+function clearReadyCountdown(room) {
+    if (room.countdownTimer) clearInterval(room.countdownTimer);
+    room.countdownTimer = null;
+    room.countdownEndsAt = null;
+    room.countdownSeconds = null;
+}
+
+function advanceGamePhase(room) {
+    clearReadyCountdown(room);
+    room.phase = room.phase === 'NIGHT_WEREWOLF' ? 'DAY_DISCUSS' : 'NIGHT_WEREWOLF';
+    room.readyPlayerIds.clear();
+    room.gamePlayers.forEach(player => {
+        player.isReady = false;
+    });
+    broadcastGameProgress(room);
+    broadcastRoomEvent(room, {
+        playerId: null,
+        text: room.phase === 'DAY_DISCUSS'
+            ? '天亮了，进入白天讨论阶段。'
+            : '夜幕降临，进入狼人阶段。'
+    });
+}
+
+function startReadyCountdown(room) {
+    if (room.countdownTimer) return;
+    const activePlayers = connectedPlayers(room);
+    if (activePlayers.length === 0 || activePlayers.some(player =>
+        !room.readyPlayerIds.has(player.id)
+    )) return;
+
+    room.countdownEndsAt = Date.now() + READY_COUNTDOWN_SECONDS * 1000;
+    room.countdownSeconds = READY_COUNTDOWN_SECONDS;
+    broadcastGameProgress(room);
+    room.countdownTimer = setInterval(() => {
+        const secondsRemaining = Math.ceil((room.countdownEndsAt - Date.now()) / 1000);
+        if (secondsRemaining <= 0) {
+            advanceGamePhase(room);
+            return;
+        }
+        if (room.countdownSeconds !== secondsRemaining) {
+            room.countdownSeconds = secondsRemaining;
+            broadcastGameProgress(room);
+        }
+    }, 200);
+}
+
+function updateReadiness(room, client, isReady) {
+    if (isReady) {
+        room.readyPlayerIds.add(client.id);
+    } else {
+        room.readyPlayerIds.delete(client.id);
+        clearReadyCountdown(room);
+    }
+    const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
+    if (gamePlayer) gamePlayer.isReady = isReady;
+    broadcastGameProgress(room);
+    startReadyCountdown(room);
 }
 
 function enterRoom(client, name, room) {
@@ -187,6 +265,28 @@ function handleMessage(client, message) {
         return;
     }
 
+    if (message.type === 'set-ready') {
+        const room = roomFor(client);
+        if (!room || !room.started) {
+            sendError(client, '游戏尚未开始。');
+            return;
+        }
+        if (room.countdownTimer && message.isReady === false) {
+            updateReadiness(room, client, false);
+            return;
+        }
+        if (typeof message.isReady !== 'boolean') {
+            sendError(client, '准备状态无效。');
+            return;
+        }
+        if (room.countdownTimer) {
+            sendError(client, '倒计时已经开始，无法更改准备状态。');
+            return;
+        }
+        updateReadiness(room, client, message.isReady);
+        return;
+    }
+
     if (message.type === 'start-game') {
         const room = roomFor(client);
         if (!room) {
@@ -207,15 +307,26 @@ function handleMessage(client, message) {
         }
 
         room.started = true;
+        room.phase = 'NIGHT_WEREWOLF';
+        room.readyPlayerIds = new Set();
+        room.countdownTimer = null;
+        room.countdownEndsAt = null;
+        room.countdownSeconds = null;
         const roles = shuffledRoles(room.players.length);
         room.gamePlayers = room.players.map((player, index) => ({
             id: player.id,
             name: player.name,
             role: roles[index],
             isAlive: true,
+            isReady: false,
             isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
         }));
-        room.players.forEach(player => send(player, { type: 'game-started', players: room.gamePlayers }));
+        room.players.forEach(player => send(player, {
+            type: 'game-started',
+            phase: room.phase,
+            players: room.gamePlayers
+        }));
+        broadcastGameProgress(room);
         broadcastRoomEvent(room, {
             playerId: client.id,
             text: `${client.name} 开始了游戏。`
@@ -233,6 +344,10 @@ function leaveRoom(client) {
     const leavingName = client.name;
     if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
     client.reconnectTimer = null;
+    if (room.started) {
+        clearReadyCountdown(room);
+        room.readyPlayerIds.delete(client.id);
+    }
     room.players = room.players.filter(player => player.id !== client.id);
     client.roomCode = null;
     if (room.players.length === 0) {
@@ -243,6 +358,11 @@ function leaveRoom(client) {
         room.hostId = room.players[0].id;
     }
     if (!room.started) broadcastRoomState(room);
+    else {
+        room.gamePlayers = room.gamePlayers.filter(player => player.id !== client.id);
+        broadcastGameProgress(room);
+        startReadyCountdown(room);
+    }
     broadcastRoomEvent(room, {
         playerId: client.id,
         text: `${leavingName} 离开了房间。`
@@ -343,13 +463,21 @@ webSocketServer.on('connection', (socket, request) => {
     if (existingPlayer) {
         if (existingPlayer.room.started) {
             const gamePlayer = existingPlayer.room.gamePlayers?.find(player => player.id === client.id);
-            if (gamePlayer) gamePlayer.isConnected = true;
+            if (gamePlayer) {
+                gamePlayer.isConnected = true;
+                gamePlayer.isReady = existingPlayer.room.readyPlayerIds.has(client.id);
+            }
             existingPlayer.room.players.forEach(player => send(player, {
                 type: 'player-connection',
                 playerId: client.id,
                 isConnected: true
             }));
-            send(client, { type: 'game-started', players: existingPlayer.room.gamePlayers });
+            send(client, {
+                type: 'game-started',
+                phase: existingPlayer.room.phase,
+                players: existingPlayer.room.gamePlayers
+            });
+            broadcastGameProgress(existingPlayer.room);
         } else {
             broadcastRoomState(existingPlayer.room);
         }
@@ -377,13 +505,19 @@ webSocketServer.on('connection', (socket, request) => {
         if (!room) return;
 
         if (room.started) {
+            clearReadyCountdown(room);
+            room.readyPlayerIds.delete(client.id);
             const gamePlayer = room.gamePlayers?.find(player => player.id === client.id);
-            if (gamePlayer) gamePlayer.isConnected = false;
+            if (gamePlayer) {
+                gamePlayer.isConnected = false;
+                gamePlayer.isReady = false;
+            }
             room.players.forEach(player => send(player, {
                 type: 'player-connection',
                 playerId: client.id,
                 isConnected: false
             }));
+            broadcastGameProgress(room);
         } else {
             broadcastRoomState(room);
         }

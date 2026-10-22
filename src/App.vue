@@ -18,6 +18,7 @@ interface Player {
     role: Role | 'unassigned';
     isAlive: boolean;
     isConnected: boolean;
+    isReady: boolean;
     isMe: boolean;
 }
 
@@ -25,6 +26,7 @@ interface RoomPlayer {
     id: string;
     name: string;
     isConnected: boolean;
+    isReady: boolean;
 }
 
 interface GamePlayer {
@@ -33,14 +35,16 @@ interface GamePlayer {
     role: Role;
     isAlive: boolean;
     isConnected: boolean;
+    isReady: boolean;
 }
 
 type ServerMessage =
     | { type: 'connected'; playerId: string }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
-    | { type: 'game-started'; players: GamePlayer[] }
+    | { type: 'game-started'; phase: GamePhase; players: GamePlayer[] }
+    | { type: 'game-progress'; phase: GamePhase; readyPlayerIds: string[]; countdownSeconds: number | null }
     | { type: 'player-connection'; playerId: string; isConnected: boolean }
-    | { type: 'room-event'; playerId: string; text: string }
+    | { type: 'room-event'; playerId: string | null; text: string }
     | { type: 'error'; message: string };
 
 interface MemoEntry {
@@ -73,12 +77,12 @@ const connectionState = ref<ConnectionState>('connecting');
 const roomError = ref('');
 const waitingNote = ref('等待房主开始游戏...');
 const roomStarted = ref(false);
+const countdownSeconds = ref<number | null>(null);
 const nightTarget = ref<string | null>(null);
 const logs = ref<MemoEntry[]>([{ text: '[系统] 创建房间或输入房间码加入好友的房间。', isOwnAction: false }]);
 const logContainer = ref<HTMLDivElement | null>(null);
 
 let roomConnection: WebSocket | null = null;
-let phaseTimer: ReturnType<typeof setTimeout> | null = null;
 
 const hostId = ref<string | null>(null);
 const isHost = computed(() => Boolean(playerId.value) && hostId.value === playerId.value);
@@ -120,10 +124,10 @@ const phaseTitle = computed(() => phase.value === 'NIGHT_WEREWOLF'
 const phaseDescription = computed(() => {
     if (phase.value === 'NIGHT_WEREWOLF') {
         return currentPlayer.value?.role === 'werewolf'
-            ? '轮到你行动：请选择一名玩家进行袭击。'
+            ? '轮到你行动：请选择一名玩家进行袭击，完成后点击准备就绪。'
             : '你是好人阵营，正在沉睡中，等待狼人行动...';
     }
-    return '昨晚平安夜 / 或有人被袭击。请结合语音频道语音进行辩论并投票！';
+    return '请结合语音频道进行讨论与投票；完成后点击准备就绪，等待所有玩家进入下一阶段。';
 });
 const aliveTargets = computed(() => players.value.filter(player =>
     player.isAlive && player.role !== 'werewolf'
@@ -131,6 +135,15 @@ const aliveTargets = computed(() => players.value.filter(player =>
 const canStartGame = computed(() =>
     isHost.value && !roomStarted.value && players.value.length >= MIN_PLAYERS
 );
+const readyPlayerCount = computed(() => players.value.filter(player =>
+    player.isConnected && player.isReady
+).length);
+const connectedPlayerCount = computed(() => players.value.filter(player => player.isConnected).length);
+const readyButtonLabel = computed(() => currentPlayer.value?.isReady ? '取消准备' : '准备就绪');
+
+function isGamePhase(value: unknown): value is GamePhase {
+    return value === 'NIGHT_WEREWOLF' || value === 'DAY_DISCUSS';
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -146,6 +159,7 @@ function isRoomPlayerList(value: unknown): value is RoomPlayer[] {
         && typeof player.id === 'string'
         && typeof player.name === 'string'
         && typeof player.isConnected === 'boolean'
+        && typeof player.isReady === 'boolean'
     );
 }
 
@@ -157,6 +171,7 @@ function isGamePlayerList(value: unknown): value is GamePlayer[] {
         && isRole(player.role)
         && typeof player.isAlive === 'boolean'
         && typeof player.isConnected === 'boolean'
+        && typeof player.isReady === 'boolean'
     );
 }
 
@@ -183,15 +198,35 @@ function parseServerMessage(value: unknown): ServerMessage | null {
                 players: roomPlayers.map(player => ({
                     id: player.id,
                     name: player.name,
-                    isConnected: player.isConnected
+                    isConnected: player.isConnected,
+                    isReady: player.isReady
                 }))
             }
         };
     }
-    if (value.type === 'game-started' && isGamePlayerList(value.players)) {
+    if (value.type === 'game-started' && isGamePhase(value.phase) && isGamePlayerList(value.players)) {
         return {
             type: 'game-started',
+            phase: value.phase,
             players: value.players
+        };
+    }
+    if (
+        value.type === 'game-progress'
+        && isGamePhase(value.phase)
+        && Array.isArray(value.readyPlayerIds)
+        && value.readyPlayerIds.every(id => typeof id === 'string')
+        && (value.countdownSeconds === null || (
+            typeof value.countdownSeconds === 'number'
+            && Number.isInteger(value.countdownSeconds)
+            && value.countdownSeconds >= 1
+        ))
+    ) {
+        return {
+            type: 'game-progress',
+            phase: value.phase,
+            readyPlayerIds: value.readyPlayerIds,
+            countdownSeconds: value.countdownSeconds
         };
     }
     if (
@@ -207,7 +242,7 @@ function parseServerMessage(value: unknown): ServerMessage | null {
     }
     if (
         value.type === 'room-event'
-        && typeof value.playerId === 'string'
+        && (typeof value.playerId === 'string' || value.playerId === null)
         && typeof value.text === 'string'
     ) {
         return {
@@ -232,7 +267,7 @@ function setRoomError(message: string): void {
     roomError.value = message;
 }
 
-function sendRoomMessage(message: Record<string, string>): void {
+function sendRoomMessage(message: Record<string, string | boolean>): void {
     if (!__WEBSOCKET_URL__ && window.location.hostname.endsWith('.github.io')) {
         setRoomError('GitHub Pages 仅托管静态页面。请配置 WEBSOCKET_URL，指向已部署的 WebSocket 服务，然后重新构建并部署。');
         return;
@@ -299,7 +334,6 @@ function handleRoomMessage(message: ServerMessage): void {
             ...player,
             role: 'unassigned',
             isAlive: true,
-            isConnected: player.isConnected,
             isMe: player.id === playerId.value
         }));
         if (!renameName.value) {
@@ -324,13 +358,32 @@ function handleRoomMessage(message: ServerMessage): void {
         return;
     }
 
+    if (message.type === 'game-progress') {
+        const previousPhase = phase.value;
+        phase.value = message.phase;
+        countdownSeconds.value = message.countdownSeconds;
+        players.value.forEach(player => {
+            player.isReady = message.readyPlayerIds.includes(player.id);
+        });
+        if (previousPhase !== message.phase) {
+            nightTarget.value = null;
+            void addLog(message.phase === 'DAY_DISCUSS'
+                ? '天亮了，进入白天讨论阶段。'
+                : '夜幕降临，进入狼人阶段。');
+        }
+        return;
+    }
+
     roomStarted.value = true;
     players.value = message.players.map(player => ({
         ...player,
         isMe: player.id === playerId.value
     }));
-    phase.value = 'NIGHT_WEREWOLF';
-    void addLog('【夜晚阶段】狼人请睁眼，选择今晚要袭击的目标。');
+    phase.value = message.phase;
+    countdownSeconds.value = null;
+    void addLog(message.phase === 'NIGHT_WEREWOLF'
+        ? '【夜晚阶段】狼人请睁眼，选择今晚要袭击的目标。'
+        : '天亮了，进入白天讨论阶段。');
 }
 
 function connectToRoomService(): void {
@@ -411,17 +464,15 @@ function changePlayerName(): void {
     sendRoomMessage({ type: 'change-name', name });
 }
 
-function advanceNight(): void {
-    if (phase.value !== 'NIGHT_WEREWOLF') return;
-    phase.value = 'DAY_DISCUSS';
-    void addLog('天亮了，所有玩家睁眼。');
-}
-
 function attackPlayer(player: Player): void {
     nightTarget.value = player.id;
     broadcastMemo(`你（狼人）锁定了袭击目标：${player.name}`);
-    if (phaseTimer) clearTimeout(phaseTimer);
-    phaseTimer = setTimeout(advanceNight, 1000);
+}
+
+function toggleReady(): void {
+    const player = currentPlayer.value;
+    if (!player || countdownSeconds.value !== null) return;
+    sendRoomMessage({ type: 'set-ready', isReady: String(!player.isReady) });
 }
 
 function voteOutPlayer(): void {
@@ -444,29 +495,14 @@ function voteOutPlayer(): void {
     } else if (aliveWolves.length >= aliveGood.length) {
         endGame('🎉 游戏结束！狼人阵营获胜！', '游戏结束：狼人阵营获胜！');
     } else {
-        phaseTimer = setTimeout(() => {
-            phase.value = 'NIGHT_WEREWOLF';
-            void addLog('------------------');
-            void addLog('新的一夜降临，天黑请闭眼...');
-        }, 2000);
+        void addLog('等待所有玩家准备就绪后进入下一阶段。');
     }
 }
 
 function endGame(logMessage: string, toastMessage: string): void {
     void addLog(logMessage);
     toast.add({ severity: 'success', summary: '游戏结束', detail: toastMessage, life: 5000 });
-    phase.value = 'LOBBY';
 }
-
-watch(
-    () => [phase.value, currentPlayer.value?.role, currentPlayer.value?.isAlive] as const,
-    ([currentPhase, role, isAlive]) => {
-        if (phaseTimer) clearTimeout(phaseTimer);
-        if (currentPhase === 'NIGHT_WEREWOLF' && (role !== 'werewolf' || !isAlive)) {
-            phaseTimer = setTimeout(advanceNight, 2500);
-        }
-    }
-);
 
 watch(roomCodeInput, value => {
     roomCodeInput.value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
@@ -492,7 +528,6 @@ onMounted(() => {
     connectToRoomService();
 });
 onUnmounted(() => {
-    if (phaseTimer) clearTimeout(phaseTimer);
     roomConnection?.close();
 });
 </script>
@@ -580,6 +615,21 @@ onUnmounted(() => {
                     <template #title>{{ phaseTitle }}</template>
                     <template #subtitle>{{ phaseDescription }}</template>
                     <template #content>
+                        <div class="ready-check">
+                            <strong v-if="countdownSeconds !== null">
+                                {{ countdownSeconds }} 秒后进入下一阶段
+                            </strong>
+                            <span v-else>
+                                已准备 {{ readyPlayerCount }} / {{ connectedPlayerCount }} 位在线玩家
+                            </span>
+                            <Button
+                                :label="readyButtonLabel"
+                                :icon="currentPlayer?.isReady ? 'pi pi-times' : 'pi pi-check'"
+                                :severity="currentPlayer?.isReady ? 'secondary' : 'success'"
+                                :disabled="countdownSeconds !== null || connectionState !== 'connected'"
+                                @click="toggleReady"
+                            />
+                        </div>
                         <div class="role-card">
                             <span class="eyebrow">你的底牌身份</span>
                             <strong>{{ roleDetails.name }}</strong>
@@ -632,6 +682,12 @@ onUnmounted(() => {
                                 <span class="player-identity">
                                     <span class="player-name">{{ player.name }}</span>
                                     <Tag v-if="player.id === hostId" value="房主" severity="warn" class="host-tag" />
+                                    <Tag
+                                        v-if="roomStarted"
+                                        :value="player.isReady ? '已准备' : '未准备'"
+                                        :severity="player.isReady ? 'success' : 'secondary'"
+                                        class="ready-tag"
+                                    />
                                 </span>
                                 <Tag
                                     :value="!player.isAlive ? '淘汰' : !player.isConnected ? '离线' : player.isMe ? '你' : '在线'"
@@ -797,6 +853,19 @@ button, input {
     margin-top: 16px;
 }
 
+.ready-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin: 4px 0 18px;
+    color: var(--p-surface-200);
+}
+
+.ready-check strong {
+    color: var(--p-primary-200);
+}
+
 .join-form > .p-inputtext {
     flex: 1 1 180px;
     min-width: 0;
@@ -930,6 +999,11 @@ button, input {
     font-size: 0.7rem;
 }
 
+.ready-tag {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+}
+
 .player-item.is-dead {
     opacity: 0.55;
     text-decoration: line-through;
@@ -977,6 +1051,11 @@ button, input {
 
     .rename-form {
         grid-template-columns: minmax(0, 1fr);
+    }
+
+    .ready-check {
+        flex-direction: column;
+        text-align: center;
     }
 
     .role-card {

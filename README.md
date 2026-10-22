@@ -10,9 +10,9 @@ The frontend uses Vue 3, TypeScript, PrimeVue, and the Aura theme.
 4. Run `npm start` and open `http://localhost:3000`. Starting the server builds the frontend first.
 5. Create a room and share its six-character code. Friends open the same address and enter the code to join.
 
-Rooms are held in server memory and disappear when the server stops. Players who refresh can rejoin the same room within five minutes, as long as the server stays running and browser storage is available. The lobby supports 4-8 players. The current game actions after starting are still simulated independently in each browser.
+Rooms are held in server memory and disappear when the server stops. Players who refresh can rejoin the same room within five minutes, as long as the server stays running and browser storage is available. The lobby supports 4-8 players. After the game starts, players mark themselves ready at the end of each phase. When all online players are ready, a shared five-second countdown advances everyone to the next phase automatically.
 
-The game memo is synchronized for room events and player actions. Game phases and outcomes are still simulated independently in each browser.
+The game memo and phase progression are synchronized for everyone in the room. Individual game actions and outcomes are still simulated independently in each browser.
 
 For players on separate networks, deploy the Node.js server on a host that supports WebSockets and share its public URL.
 
