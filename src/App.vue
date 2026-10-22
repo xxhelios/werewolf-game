@@ -596,6 +596,12 @@ function startGame(): void {
     if (isHost.value) sendRoomMessage({ type: 'start-game' });
 }
 
+function restartGame(): void {
+    if (isHost.value && phase.value === 'GAME_OVER') {
+        sendRoomMessage({ type: 'restart-game' });
+    }
+}
+
 function changePlayerName(): void {
     const name = renameName.value.trim();
     if (!name || name.length > 24) {
@@ -779,6 +785,15 @@ onUnmounted(() => {
                         <Message v-if="phase === 'GAME_OVER'" severity="success" :closable="false">
                             本局结束，请查看游戏备忘录中的淘汰结果与胜负公告。
                         </Message>
+                        <div v-if="phase === 'GAME_OVER'" class="action-row">
+                            <Button
+                                v-if="isHost"
+                                label="重新开始"
+                                icon="pi pi-refresh"
+                                @click="restartGame"
+                            />
+                            <p v-else class="waiting-note">等待房主重新开始游戏。</p>
+                        </div>
                         <div v-else-if="phase === 'NIGHT_WEREWOLF' && currentPlayer?.role === 'werewolf' && currentPlayer.isAlive" class="action-row">
                             <Button
                                 v-for="player in aliveTargets"

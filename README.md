@@ -14,6 +14,8 @@ Rooms remain available across page refreshes and disconnects for as long as the 
 
 Game actions, vote totals, eliminations, and win conditions are resolved by the server and synchronized to the room. Role information, seer results, and each player's vote are kept private; readiness badges appear in the member list only during voting. Eliminations are announced after all active players have voted and confirmed readiness.
 
+After a game ends, the room host can restart the game with the same room members. Roles and game progress are reset for the new round.
+
 For players on separate networks, deploy the Node.js server on a host that supports WebSockets and share its public URL.
 
 ## Deploy to GitHub Pages

@@ -356,6 +356,49 @@ function shuffledRoles(playerCount) {
     return roles;
 }
 
+function beginGame(room, initiator) {
+    clearReadyCountdown(room);
+    room.started = true;
+    room.phase = 'ROLE_REVEAL';
+    room.readyPlayerIds = new Set();
+    room.witchPotions = { saveUsed: false, poisonUsed: false };
+    room.wolfTargets = new Map();
+    room.witchSaveTargetId = null;
+    room.witchPoisonTargetId = null;
+    room.wolfTargetId = null;
+    room.seerTargetId = null;
+    room.seerResult = null;
+    room.votes = new Map();
+    room.eliminatedPlayerIds = [];
+    const roles = shuffledRoles(room.players.length);
+    room.gamePlayers = room.players.map((player, index) => ({
+        id: player.id,
+        name: player.name,
+        role: roles[index],
+        isAlive: true,
+        isReady: false,
+        isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
+    }));
+    room.players.forEach(player => send(player, {
+        type: 'game-started',
+        phase: room.phase,
+        role: room.gamePlayers.find(gamePlayer => gamePlayer.id === player.id)?.role ?? null,
+        players: room.gamePlayers.map(gamePlayer => ({
+            id: gamePlayer.id,
+            name: gamePlayer.name,
+            role: 'unassigned',
+            isAlive: gamePlayer.isAlive,
+            isConnected: gamePlayer.isConnected,
+            isReady: false
+        }))
+    }));
+    broadcastGameProgress(room);
+    broadcastRoomEvent(room, {
+        playerId: initiator.id,
+        text: `${initiator.name}${room.round > 1 ? ' 重新' : ' '}开始了游戏。`
+    });
+}
+
 function handleMessage(client, message) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) {
         sendError(client, '无效的请求。');
@@ -621,48 +664,27 @@ function handleMessage(client, message) {
             return;
         }
 
-        room.started = true;
-        room.phase = 'ROLE_REVEAL';
-        room.readyPlayerIds = new Set();
-        room.countdownTimer = null;
-        room.countdownEndsAt = null;
-        room.countdownSeconds = null;
-        room.witchPotions = { saveUsed: false, poisonUsed: false };
-        room.wolfTargets = new Map();
-        room.witchSaveTargetId = null;
-        room.witchPoisonTargetId = null;
-        room.wolfTargetId = null;
-        room.seerTargetId = null;
-        room.seerResult = null;
-        room.votes = new Map();
-        room.eliminatedPlayerIds = [];
-        const roles = shuffledRoles(room.players.length);
-        room.gamePlayers = room.players.map((player, index) => ({
-            id: player.id,
-            name: player.name,
-            role: roles[index],
-            isAlive: true,
-            isReady: false,
-            isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
-        }));
-        room.players.forEach(player => send(player, {
-            type: 'game-started',
-            phase: room.phase,
-            role: room.gamePlayers.find(gamePlayer => gamePlayer.id === player.id)?.role ?? null,
-            players: room.gamePlayers.map(gamePlayer => ({
-                id: gamePlayer.id,
-                name: gamePlayer.name,
-                role: 'unassigned',
-                isAlive: gamePlayer.isAlive,
-                isConnected: gamePlayer.isConnected,
-                isReady: false
-            }))
-        }));
-        broadcastGameProgress(room);
-        broadcastRoomEvent(room, {
-            playerId: client.id,
-            text: `${client.name} 开始了游戏。`
-        });
+        room.round = 1;
+        beginGame(room, client);
+        return;
+    }
+
+    if (message.type === 'restart-game') {
+        const room = roomFor(client);
+        if (!room || room.phase !== 'GAME_OVER') {
+            sendError(client, '只有游戏结束后才能重新开始。');
+            return;
+        }
+        if (room.hostId !== client.id) {
+            sendError(client, '只有房主可以重新开始游戏。');
+            return;
+        }
+        if (room.players.length < MIN_PLAYERS) {
+            sendError(client, `至少需要 ${MIN_PLAYERS} 位玩家才能重新开始。`);
+            return;
+        }
+        room.round = (room.round || 1) + 1;
+        beginGame(room, client);
         return;
     }
 
