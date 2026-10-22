@@ -5,11 +5,17 @@ import Card from 'primevue/card';
 import InputText from 'primevue/inputtext';
 import Message from 'primevue/message';
 import Tag from 'primevue/tag';
-import Toast from 'primevue/toast';
-import { useToast } from 'primevue/usetoast';
 
 type Role = 'werewolf' | 'seer' | 'witch' | 'villager';
-type GamePhase = 'LOBBY' | 'NIGHT_WEREWOLF' | 'DAY_DISCUSS';
+type GamePhase =
+    | 'LOBBY'
+    | 'ROLE_REVEAL'
+    | 'NIGHT_WEREWOLF'
+    | 'NIGHT_WITCH'
+    | 'NIGHT_SEER'
+    | 'DAY_VOTE'
+    | 'GAME_OVER';
+type ActiveGamePhase = Exclude<GamePhase, 'LOBBY'>;
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'failed';
 
 interface Player {
@@ -32,17 +38,38 @@ interface RoomPlayer {
 interface GamePlayer {
     id: string;
     name: string;
-    role: Role;
+    role: Role | 'unassigned';
     isAlive: boolean;
     isConnected: boolean;
     isReady: boolean;
 }
 
+interface WitchPotions {
+    saveUsed: boolean;
+    poisonUsed: boolean;
+}
+
 type ServerMessage =
     | { type: 'connected'; playerId: string }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
-    | { type: 'game-started'; phase: GamePhase; players: GamePlayer[] }
-    | { type: 'game-progress'; phase: GamePhase; readyPlayerIds: string[]; countdownSeconds: number | null }
+    | { type: 'game-started'; phase: ActiveGamePhase; role: Role | null; players: GamePlayer[] }
+    | {
+        type: 'game-progress';
+        phase: ActiveGamePhase;
+        players: GamePlayer[];
+        readyPlayerIds: string[];
+        countdownSeconds: number | null;
+        role: Role | null;
+        wolfTargetId: string | null;
+        witchPotions: WitchPotions | null;
+        seerResult: Role | null;
+        eliminatedPlayerIds: string[];
+        selectedWolfTargetId: string | null;
+        selectedSaveTargetId: string | null;
+        selectedPoisonTargetId: string | null;
+        selectedSeerTargetId: string | null;
+        selectedVoteTargetId: string | null;
+    }
     | { type: 'player-connection'; playerId: string; isConnected: boolean }
     | { type: 'room-event'; playerId: string | null; text: string }
     | { type: 'error'; message: string };
@@ -65,7 +92,6 @@ const roleInfo: Record<Role, { name: string; tip: string }> = {
     villager: { name: '🧑 平民', tip: '认真听取发言，通过投票找出狼人。' }
 };
 
-const toast = useToast();
 const playerName = ref('Player');
 const renameName = ref('');
 const roomCodeInput = ref('');
@@ -78,7 +104,14 @@ const roomError = ref('');
 const waitingNote = ref('等待房主开始游戏...');
 const roomStarted = ref(false);
 const countdownSeconds = ref<number | null>(null);
-const nightTarget = ref<string | null>(null);
+const wolfTargetId = ref<string | null>(null);
+const selectedWolfTargetId = ref<string | null>(null);
+const selectedSaveTargetId = ref<string | null>(null);
+const selectedPoisonTargetId = ref<string | null>(null);
+const selectedSeerTargetId = ref<string | null>(null);
+const selectedVoteTargetId = ref<string | null>(null);
+const witchPotions = ref<WitchPotions>({ saveUsed: false, poisonUsed: false });
+const seerResult = ref<Role | null>(null);
 const logs = ref<MemoEntry[]>([{ text: '[系统] 创建房间或输入房间码加入好友的房间。', isOwnAction: false }]);
 const logContainer = ref<HTMLDivElement | null>(null);
 
@@ -118,31 +151,77 @@ const roleDetails = computed(() => {
     const role = currentPlayer.value?.role;
     return role && role !== 'unassigned' ? roleInfo[role] : { name: '未知', tip: '' };
 });
-const phaseTitle = computed(() => phase.value === 'NIGHT_WEREWOLF'
-    ? '天黑请闭眼 · 狼人回合 🐺'
-    : '天亮了 · 自由讨论与决胜 ☀️');
+const phaseTitle = computed(() => ({
+    LOBBY: '等待玩家',
+    ROLE_REVEAL: '查看身份 · 准备开始',
+    NIGHT_WEREWOLF: '第一步 · 狼人行动 🐺',
+    NIGHT_WITCH: '第二步 · 女巫行动 🧪',
+    NIGHT_SEER: '第三步 · 预言家查验 🔮',
+    DAY_VOTE: '讨论与投票 ☀️',
+    GAME_OVER: '游戏结束'
+})[phase.value]);
 const phaseDescription = computed(() => {
+    if (currentPlayer.value && !currentPlayer.value.isAlive) return '你已被淘汰，请等待本局游戏结束。';
+    if (phase.value === 'ROLE_REVEAL') return '请查看你的角色信息，确认后点击“准备就绪”。';
     if (phase.value === 'NIGHT_WEREWOLF') {
         return currentPlayer.value?.role === 'werewolf'
-            ? '轮到你行动：请选择一名玩家进行袭击，完成后点击准备就绪。'
-            : '你是好人阵营，正在沉睡中，等待狼人行动...';
+            ? '狼人选择今晚的袭击目标，确认后点击“准备就绪”。'
+            : '狼人正在行动，请等待本阶段结束。';
     }
-    return '请结合语音频道进行讨论与投票；完成后点击准备就绪，等待所有玩家进入下一阶段。';
+    if (phase.value === 'NIGHT_WITCH') {
+        return currentPlayer.value?.role === 'witch'
+            ? '可使用解药救人、使用毒药选择一人，或不使用药剂直接准备。'
+            : '女巫正在行动，请等待本阶段结束。';
+    }
+    if (phase.value === 'NIGHT_SEER') {
+        return currentPlayer.value?.role === 'seer'
+            ? '选择一位玩家查验身份，确认后点击“准备就绪”。'
+            : '预言家正在查验，请等待本阶段结束。';
+    }
+    if (phase.value === 'DAY_VOTE') return '请完成讨论并投票，然后点击“准备就绪”。投票内容不会公开。';
+    return '本局游戏已结束。';
 });
-const aliveTargets = computed(() => players.value.filter(player =>
-    player.isAlive && player.role !== 'werewolf'
-));
+const aliveTargets = computed(() => players.value.filter(player => player.isAlive && !player.isMe));
 const canStartGame = computed(() =>
     isHost.value && !roomStarted.value && players.value.length >= MIN_PLAYERS
 );
 const readyPlayerCount = computed(() => players.value.filter(player =>
-    player.isConnected && player.isReady
+    player.isConnected && player.isAlive && player.isReady
 ).length);
-const connectedPlayerCount = computed(() => players.value.filter(player => player.isConnected).length);
+const connectedPlayerCount = computed(() => players.value.filter(player =>
+    player.isConnected && player.isAlive
+).length);
+const wolfTargetName = computed(() => players.value.find(player => player.id === wolfTargetId.value)?.name ?? '无');
 const readyButtonLabel = computed(() => currentPlayer.value?.isReady ? '取消准备' : '准备就绪');
+const canReady = computed(() => {
+    const player = currentPlayer.value;
+    if (!player?.isAlive || countdownSeconds.value !== null || connectionState.value !== 'connected') {
+        return false;
+    }
+    if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !selectedWolfTargetId.value) {
+        return false;
+    }
+    if (phase.value === 'DAY_VOTE' && !selectedVoteTargetId.value) return false;
+    return phase.value !== 'GAME_OVER';
+});
+const canChooseAction = computed(() =>
+    connectionState.value === 'connected'
+    && countdownSeconds.value === null
+    && Boolean(currentPlayer.value?.isAlive)
+    && !currentPlayer.value?.isReady
+);
 
-function isGamePhase(value: unknown): value is GamePhase {
-    return value === 'NIGHT_WEREWOLF' || value === 'DAY_DISCUSS';
+function isGamePhase(value: unknown): value is ActiveGamePhase {
+    return value === 'ROLE_REVEAL'
+        || value === 'NIGHT_WEREWOLF'
+        || value === 'NIGHT_WITCH'
+        || value === 'NIGHT_SEER'
+        || value === 'DAY_VOTE'
+        || value === 'GAME_OVER';
+}
+
+function isNullableRole(value: unknown): value is Role | null {
+    return value === null || isRole(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -151,6 +230,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRole(value: unknown): value is Role {
     return value === 'werewolf' || value === 'seer' || value === 'witch' || value === 'villager';
+}
+
+function isWitchPotions(value: unknown): value is WitchPotions {
+    return isRecord(value)
+        && typeof value.saveUsed === 'boolean'
+        && typeof value.poisonUsed === 'boolean';
 }
 
 function isRoomPlayerList(value: unknown): value is RoomPlayer[] {
@@ -168,7 +253,7 @@ function isGamePlayerList(value: unknown): value is GamePlayer[] {
         isRecord(player)
         && typeof player.id === 'string'
         && typeof player.name === 'string'
-        && isRole(player.role)
+        && (player.role === 'unassigned' || isRole(player.role))
         && typeof player.isAlive === 'boolean'
         && typeof player.isConnected === 'boolean'
         && typeof player.isReady === 'boolean'
@@ -204,16 +289,23 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             }
         };
     }
-    if (value.type === 'game-started' && isGamePhase(value.phase) && isGamePlayerList(value.players)) {
+    if (
+        value.type === 'game-started'
+        && isGamePhase(value.phase)
+        && isNullableRole(value.role)
+        && isGamePlayerList(value.players)
+    ) {
         return {
             type: 'game-started',
             phase: value.phase,
+            role: value.role,
             players: value.players
         };
     }
     if (
         value.type === 'game-progress'
         && isGamePhase(value.phase)
+        && isGamePlayerList(value.players)
         && Array.isArray(value.readyPlayerIds)
         && value.readyPlayerIds.every(id => typeof id === 'string')
         && (value.countdownSeconds === null || (
@@ -221,12 +313,34 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             && Number.isInteger(value.countdownSeconds)
             && value.countdownSeconds >= 1
         ))
+        && isNullableRole(value.role)
+        && (value.wolfTargetId === null || typeof value.wolfTargetId === 'string')
+        && (value.witchPotions === null || isWitchPotions(value.witchPotions))
+        && isNullableRole(value.seerResult)
+        && Array.isArray(value.eliminatedPlayerIds)
+        && value.eliminatedPlayerIds.every(id => typeof id === 'string')
+        && (value.selectedWolfTargetId === null || typeof value.selectedWolfTargetId === 'string')
+        && (value.selectedSaveTargetId === null || typeof value.selectedSaveTargetId === 'string')
+        && (value.selectedPoisonTargetId === null || typeof value.selectedPoisonTargetId === 'string')
+        && (value.selectedSeerTargetId === null || typeof value.selectedSeerTargetId === 'string')
+        && (value.selectedVoteTargetId === null || typeof value.selectedVoteTargetId === 'string')
     ) {
         return {
             type: 'game-progress',
             phase: value.phase,
+            players: value.players,
             readyPlayerIds: value.readyPlayerIds,
-            countdownSeconds: value.countdownSeconds
+            countdownSeconds: value.countdownSeconds,
+            role: value.role,
+            wolfTargetId: value.wolfTargetId,
+            witchPotions: value.witchPotions,
+            seerResult: value.seerResult,
+            eliminatedPlayerIds: value.eliminatedPlayerIds,
+            selectedWolfTargetId: value.selectedWolfTargetId,
+            selectedSaveTargetId: value.selectedSaveTargetId,
+            selectedPoisonTargetId: value.selectedPoisonTargetId,
+            selectedSeerTargetId: value.selectedSeerTargetId,
+            selectedVoteTargetId: value.selectedVoteTargetId
         };
     }
     if (
@@ -267,7 +381,7 @@ function setRoomError(message: string): void {
     roomError.value = message;
 }
 
-function sendRoomMessage(message: Record<string, string | boolean>): void {
+function sendRoomMessage(message: Record<string, string | boolean | null>): void {
     if (!__WEBSOCKET_URL__ && window.location.hostname.endsWith('.github.io')) {
         setRoomError('GitHub Pages 仅托管静态页面。请配置 WEBSOCKET_URL，指向已部署的 WebSocket 服务，然后重新构建并部署。');
         return;
@@ -277,10 +391,6 @@ function sendRoomMessage(message: Record<string, string | boolean>): void {
         return;
     }
     roomConnection.send(JSON.stringify(message));
-}
-
-function broadcastMemo(text: string): void {
-    sendRoomMessage({ type: 'memo-entry', text });
 }
 
 function validatedPlayerName(): string | null {
@@ -360,16 +470,31 @@ function handleRoomMessage(message: ServerMessage): void {
 
     if (message.type === 'game-progress') {
         const previousPhase = phase.value;
+        roomStarted.value = true;
         phase.value = message.phase;
         countdownSeconds.value = message.countdownSeconds;
-        players.value.forEach(player => {
-            player.isReady = message.readyPlayerIds.includes(player.id);
-        });
+        players.value = message.players.map(player => ({
+            ...player,
+            role: player.id === playerId.value ? message.role ?? 'unassigned' : 'unassigned',
+            isMe: player.id === playerId.value
+        }));
+        wolfTargetId.value = message.wolfTargetId;
+        witchPotions.value = message.witchPotions ?? { saveUsed: false, poisonUsed: false };
+        seerResult.value = message.seerResult;
+        selectedWolfTargetId.value = message.selectedWolfTargetId;
+        selectedSaveTargetId.value = message.selectedSaveTargetId;
+        selectedPoisonTargetId.value = message.selectedPoisonTargetId;
+        selectedSeerTargetId.value = message.selectedSeerTargetId;
+        selectedVoteTargetId.value = message.selectedVoteTargetId;
         if (previousPhase !== message.phase) {
-            nightTarget.value = null;
-            void addLog(message.phase === 'DAY_DISCUSS'
-                ? '天亮了，进入白天讨论阶段。'
-                : '夜幕降临，进入狼人阶段。');
+            void addLog(({
+                ROLE_REVEAL: '游戏开始，请查看各自身份。',
+                NIGHT_WEREWOLF: '进入狼人行动阶段。',
+                NIGHT_WITCH: '进入女巫行动阶段。',
+                NIGHT_SEER: '进入预言家查验阶段。',
+                DAY_VOTE: '进入讨论与投票阶段。',
+                GAME_OVER: '本局游戏结束。'
+            })[message.phase]);
         }
         return;
     }
@@ -377,13 +502,12 @@ function handleRoomMessage(message: ServerMessage): void {
     roomStarted.value = true;
     players.value = message.players.map(player => ({
         ...player,
+        role: player.id === playerId.value ? message.role ?? 'unassigned' : 'unassigned',
         isMe: player.id === playerId.value
     }));
     phase.value = message.phase;
     countdownSeconds.value = null;
-    void addLog(message.phase === 'NIGHT_WEREWOLF'
-        ? '【夜晚阶段】狼人请睁眼，选择今晚要袭击的目标。'
-        : '天亮了，进入白天讨论阶段。');
+    void addLog('游戏开始，请查看各自身份。');
 }
 
 function connectToRoomService(): void {
@@ -464,44 +588,37 @@ function changePlayerName(): void {
     sendRoomMessage({ type: 'change-name', name });
 }
 
-function attackPlayer(player: Player): void {
-    nightTarget.value = player.id;
-    broadcastMemo(`你（狼人）锁定了袭击目标：${player.name}`);
+function selectWolfTarget(player: Player): void {
+    if (!canChooseAction.value || currentPlayer.value?.role !== 'werewolf') return;
+    selectedWolfTargetId.value = player.id;
+    sendRoomMessage({ type: 'game-action', action: 'wolf-target', targetId: player.id });
+}
+
+function selectWitchTarget(action: 'witch-save' | 'witch-poison', player: Player): void {
+    if (!canChooseAction.value || currentPlayer.value?.role !== 'witch') return;
+    const selectedTarget = action === 'witch-save' ? selectedSaveTargetId : selectedPoisonTargetId;
+    const nextTargetId = selectedTarget.value === player.id ? null : player.id;
+    selectedTarget.value = nextTargetId;
+    sendRoomMessage({ type: 'game-action', action, targetId: nextTargetId });
+}
+
+function selectSeerTarget(player: Player): void {
+    if (!canChooseAction.value || currentPlayer.value?.role !== 'seer') return;
+    selectedSeerTargetId.value = player.id;
+    seerResult.value = null;
+    sendRoomMessage({ type: 'game-action', action: 'seer-check', targetId: player.id });
+}
+
+function selectVoteTarget(player: Player): void {
+    if (!canChooseAction.value || phase.value !== 'DAY_VOTE') return;
+    selectedVoteTargetId.value = player.id;
+    sendRoomMessage({ type: 'game-action', action: 'vote', targetId: player.id });
 }
 
 function toggleReady(): void {
     const player = currentPlayer.value;
-    if (!player || countdownSeconds.value !== null) return;
-    sendRoomMessage({ type: 'set-ready', isReady: String(!player.isReady) });
-}
-
-function voteOutPlayer(): void {
-    const alivePlayers = players.value.filter(player => player.isAlive);
-    if (alivePlayers.length === 0) return;
-
-    const victim = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
-    victim.isAlive = false;
-    const roleName = victim.role === 'unassigned' ? '未知' : roleInfo[victim.role].name;
-    broadcastMemo(`[投票结果] 大家投票将 ${victim.name} 逐出了局！其身份是：${roleName}`);
-
-    const aliveWolves = players.value.filter(player =>
-        player.role === 'werewolf' && player.isAlive
-    );
-    const aliveGood = players.value.filter(player =>
-        player.role !== 'werewolf' && player.isAlive
-    );
-    if (aliveWolves.length === 0) {
-        endGame('🎉 游戏结束！好人阵营获胜！', '游戏结束：好人阵营获胜！');
-    } else if (aliveWolves.length >= aliveGood.length) {
-        endGame('🎉 游戏结束！狼人阵营获胜！', '游戏结束：狼人阵营获胜！');
-    } else {
-        void addLog('等待所有玩家准备就绪后进入下一阶段。');
-    }
-}
-
-function endGame(logMessage: string, toastMessage: string): void {
-    void addLog(logMessage);
-    toast.add({ severity: 'success', summary: '游戏结束', detail: toastMessage, life: 5000 });
+    if (!player || (!player.isReady && !canReady.value) || countdownSeconds.value !== null) return;
+    sendRoomMessage({ type: 'set-ready', isReady: !player.isReady });
 }
 
 watch(roomCodeInput, value => {
@@ -534,7 +651,6 @@ onUnmounted(() => {
 
 <template>
     <div class="app-shell">
-        <Toast position="top-right" />
         <header class="topbar">
             <div class="brand">
                 <h1>🐺 空间狼人杀</h1>
@@ -615,39 +731,100 @@ onUnmounted(() => {
                     <template #title>{{ phaseTitle }}</template>
                     <template #subtitle>{{ phaseDescription }}</template>
                     <template #content>
-                        <div class="ready-check">
-                            <strong v-if="countdownSeconds !== null">
-                                {{ countdownSeconds }} 秒后进入下一阶段
-                            </strong>
-                            <span v-else>
-                                已准备 {{ readyPlayerCount }} / {{ connectedPlayerCount }} 位在线玩家
-                            </span>
-                            <Button
-                                :label="readyButtonLabel"
-                                :icon="currentPlayer?.isReady ? 'pi pi-times' : 'pi pi-check'"
-                                :severity="currentPlayer?.isReady ? 'secondary' : 'success'"
-                                :disabled="countdownSeconds !== null || connectionState !== 'connected'"
-                                @click="toggleReady"
-                            />
-                        </div>
+                        <Message v-if="roomError" severity="error" :closable="false" class="room-message">
+                            {{ roomError }}
+                        </Message>
                         <div class="role-card">
                             <span class="eyebrow">你的底牌身份</span>
                             <strong>{{ roleDetails.name }}</strong>
                             <span>{{ roleDetails.tip }}</span>
                         </div>
-                        <div v-if="phase === 'NIGHT_WEREWOLF' && currentPlayer?.role === 'werewolf' && currentPlayer.isAlive" class="action-row">
+                        <Message v-if="phase === 'GAME_OVER'" severity="success" :closable="false">
+                            本局结束，请查看游戏备忘录中的淘汰结果与胜负公告。
+                        </Message>
+                        <div v-else-if="phase === 'NIGHT_WEREWOLF' && currentPlayer?.role === 'werewolf' && currentPlayer.isAlive" class="action-row">
                             <Button
                                 v-for="player in aliveTargets"
                                 :key="player.id"
                                 :label="`袭击 [${player.name}]`"
                                 icon="pi pi-bolt"
                                 severity="danger"
-                                :outlined="nightTarget === player.id"
-                                @click="attackPlayer(player)"
+                                :outlined="selectedWolfTargetId === player.id"
+                                :disabled="!canChooseAction"
+                                @click="selectWolfTarget(player)"
                             />
                         </div>
-                        <div v-else-if="phase === 'DAY_DISCUSS'" class="action-row">
-                            <Button label="发起投票（逐出可疑人员）" icon="pi pi-check" severity="danger" @click="voteOutPlayer" />
+                        <div v-else-if="phase === 'NIGHT_WITCH' && currentPlayer?.role === 'witch' && currentPlayer.isAlive" class="witch-panel">
+                            <Message severity="warn" :closable="false">
+                                今晚被狼人袭击：{{ wolfTargetName }}
+                            </Message>
+                            <p class="potion-status">
+                                解药：{{ witchPotions.saveUsed ? '已用' : '可用' }}
+                                · 毒药：{{ witchPotions.poisonUsed ? '已用' : '可用' }}
+                            </p>
+                            <div v-for="player in players" :key="player.id" class="witch-player-row">
+                                <span>{{ player.name }}{{ player.isAlive ? '' : '（已淘汰）' }}</span>
+                                <div class="witch-actions">
+                                    <Button
+                                        label="解药"
+                                        size="small"
+                                        severity="success"
+                                        :outlined="selectedSaveTargetId !== player.id"
+                                        :disabled="!canChooseAction || witchPotions.saveUsed || player.id !== wolfTargetId"
+                                        @click="selectWitchTarget('witch-save', player)"
+                                    />
+                                    <Button
+                                        label="毒药"
+                                        size="small"
+                                        severity="danger"
+                                        :outlined="selectedPoisonTargetId !== player.id"
+                                        :disabled="!canChooseAction || witchPotions.poisonUsed || !player.isAlive"
+                                        @click="selectWitchTarget('witch-poison', player)"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                        <div v-else-if="phase === 'NIGHT_SEER' && currentPlayer?.role === 'seer' && currentPlayer.isAlive" class="action-row">
+                            <Button
+                                v-for="player in aliveTargets"
+                                :key="player.id"
+                                :label="`查验 [${player.name}]`"
+                                icon="pi pi-search"
+                                :outlined="selectedSeerTargetId !== player.id"
+                                :disabled="!canChooseAction"
+                                @click="selectSeerTarget(player)"
+                            />
+                            <Message v-if="seerResult" severity="info" :closable="false" class="action-result">
+                                查验结果：{{ roleInfo[seerResult].name }}
+                            </Message>
+                        </div>
+                        <div v-else-if="phase === 'DAY_VOTE' && currentPlayer?.isAlive" class="action-row">
+                            <Button
+                                v-for="player in aliveTargets"
+                                :key="player.id"
+                                :label="`投票给 [${player.name}]`"
+                                icon="pi pi-check"
+                                severity="danger"
+                                :outlined="selectedVoteTargetId !== player.id"
+                                :disabled="!canChooseAction"
+                                @click="selectVoteTarget(player)"
+                            />
+                            <span v-if="selectedVoteTargetId" class="private-vote-note">已投票，内容仅自己可见</span>
+                        </div>
+                        <Message v-if="countdownSeconds !== null" severity="info" :closable="false" class="countdown-message">
+                            {{ countdownSeconds }} 秒后进入下一阶段
+                        </Message>
+                        <div v-else-if="phase === 'DAY_VOTE'" class="ready-check">
+                            已准备 {{ readyPlayerCount }} / {{ connectedPlayerCount }} 位在线玩家
+                        </div>
+                        <div v-if="phase !== 'GAME_OVER'" class="action-row">
+                            <Button
+                                :label="readyButtonLabel"
+                                :icon="currentPlayer?.isReady ? 'pi pi-times' : 'pi pi-check'"
+                                :severity="currentPlayer?.isReady ? 'secondary' : 'success'"
+                                :disabled="countdownSeconds !== null || (!canReady && !currentPlayer?.isReady)"
+                                @click="toggleReady"
+                            />
                         </div>
                     </template>
                 </Card>
@@ -683,7 +860,7 @@ onUnmounted(() => {
                                     <span class="player-name">{{ player.name }}</span>
                                     <Tag v-if="player.id === hostId" value="房主" severity="warn" class="host-tag" />
                                     <Tag
-                                        v-if="roomStarted"
+                                        v-if="phase === 'DAY_VOTE' && player.isAlive"
                                         :value="player.isReady ? '已准备' : '未准备'"
                                         :severity="player.isReady ? 'success' : 'secondary'"
                                         class="ready-tag"
@@ -860,6 +1037,40 @@ button, input {
     gap: 14px;
     margin: 4px 0 18px;
     color: var(--p-surface-200);
+}
+
+.witch-panel {
+    display: grid;
+    gap: 10px;
+    margin: 16px 0;
+}
+
+.potion-status,
+.private-vote-note {
+    color: var(--p-surface-300);
+    text-align: center;
+}
+
+.witch-player-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--p-surface-800);
+    border-radius: var(--p-border-radius-md);
+    background: var(--p-surface-900);
+}
+
+.witch-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.countdown-message,
+.action-result {
+    margin-top: 14px;
+    text-align: center;
 }
 
 .ready-check strong {
@@ -1056,6 +1267,11 @@ button, input {
     .ready-check {
         flex-direction: column;
         text-align: center;
+    }
+
+    .witch-player-row {
+        align-items: flex-start;
+        flex-direction: column;
     }
 
     .role-card {

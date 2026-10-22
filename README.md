@@ -10,9 +10,9 @@ The frontend uses Vue 3, TypeScript, PrimeVue, and the Aura theme.
 4. Run `npm start` and open `http://localhost:3000`. Starting the server builds the frontend first.
 5. Create a room and share its six-character code. Friends open the same address and enter the code to join.
 
-Rooms are held in server memory and disappear when the server stops. Players who refresh can rejoin the same room within five minutes, as long as the server stays running and browser storage is available. The lobby supports 4-8 players. After the game starts, players mark themselves ready at the end of each phase. When all online players are ready, a shared five-second countdown advances everyone to the next phase automatically.
+Rooms are held in server memory and disappear when the server stops. Players who refresh can rejoin the same room within five minutes, as long as the server stays running and browser storage is available. The lobby supports 4-8 players. The game proceeds through role confirmation, werewolf action, witch action, seer check, and discussion/voting. Living online players mark themselves ready at each step; when everyone is ready, a shared five-second countdown advances the room.
 
-The game memo and phase progression are synchronized for everyone in the room. Individual game actions and outcomes are still simulated independently in each browser.
+Game actions, vote totals, eliminations, and win conditions are resolved by the server and synchronized to the room. Role information, seer results, and each player's vote are kept private; readiness badges appear in the member list only during voting. Eliminations are announced after all active players have voted and confirmed readiness.
 
 For players on separate networks, deploy the Node.js server on a host that supports WebSockets and share its public URL.
 

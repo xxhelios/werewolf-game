@@ -53,7 +53,7 @@ function broadcastRoomState(room) {
                 id: player.id,
                 name: player.name,
                 isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN),
-                isReady: room.started && room.readyPlayerIds.has(player.id)
+                isReady: false
             }))
         }
     };
@@ -66,20 +66,53 @@ function broadcastRoomEvent(room, event) {
 }
 
 function connectedPlayers(room) {
-    return room.players.filter(player =>
-        player.socket && player.socket.readyState === WebSocket.OPEN
-    );
+    return room.players.filter(player => {
+        const gamePlayer = room.gamePlayers?.find(candidate => candidate.id === player.id);
+        return gamePlayer?.isAlive
+            && player.socket
+            && player.socket.readyState === WebSocket.OPEN;
+    });
 }
 
-function broadcastGameProgress(room) {
-    const readyPlayerIds = [...room.readyPlayerIds];
+function gameProgressFor(room, client) {
+    const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
+    const publicPlayers = room.gamePlayers.map(player => {
+        const roomPlayer = room.players.find(candidate => candidate.id === player.id);
+        return {
+            id: player.id,
+            name: player.name,
+            role: 'unassigned',
+            isAlive: player.isAlive,
+            isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
+            isReady: room.phase === 'DAY_VOTE' && room.readyPlayerIds.has(player.id)
+        };
+    });
     const message = {
         type: 'game-progress',
         phase: room.phase,
-        readyPlayerIds,
-        countdownSeconds: room.countdownSeconds
+        players: publicPlayers,
+        readyPlayerIds: room.phase === 'DAY_VOTE' ? [...room.readyPlayerIds] : [],
+        countdownSeconds: room.countdownSeconds,
+        role: gamePlayer?.role ?? null,
+        wolfTargetId: gamePlayer?.role === 'witch' && room.phase === 'NIGHT_WITCH'
+            ? room.wolfTargetId
+            : null,
+        witchPotions: gamePlayer?.role === 'witch'
+            ? { saveUsed: room.witchPotions.saveUsed, poisonUsed: room.witchPotions.poisonUsed }
+            : null,
+        seerResult: gamePlayer?.role === 'seer' ? room.seerResult : null,
+        eliminatedPlayerIds: room.eliminatedPlayerIds,
+        selectedWolfTargetId: gamePlayer?.role === 'werewolf' ? room.wolfTargets.get(client.id) ?? null : null,
+        selectedSaveTargetId: gamePlayer?.role === 'witch' ? room.witchSaveTargetId : null,
+        selectedPoisonTargetId: gamePlayer?.role === 'witch' ? room.witchPoisonTargetId : null,
+        selectedSeerTargetId: gamePlayer?.role === 'seer' ? room.seerTargetId : null,
+        selectedVoteTargetId: room.votes.get(client.id) ?? null
     };
-    room.players.forEach(player => send(player, message));
+    return message;
+}
+
+function broadcastGameProgress(room) {
+    room.players.forEach(player => send(player, gameProgressFor(room, player)));
 }
 
 function clearReadyCountdown(room) {
@@ -89,24 +122,149 @@ function clearReadyCountdown(room) {
     room.countdownSeconds = null;
 }
 
-function advanceGamePhase(room) {
-    clearReadyCountdown(room);
-    room.phase = room.phase === 'NIGHT_WEREWOLF' ? 'DAY_DISCUSS' : 'NIGHT_WEREWOLF';
+function phaseActionsComplete(room) {
+    if (room.phase === 'NIGHT_WEREWOLF') {
+        return connectedPlayers(room)
+            .filter(player => room.gamePlayers.find(candidate => candidate.id === player.id)?.role === 'werewolf')
+            .every(player => room.wolfTargets.has(player.id));
+    }
+    if (room.phase === 'DAY_VOTE') {
+        return connectedPlayers(room).every(player => room.votes.has(player.id));
+    }
+    if (room.phase === 'GAME_OVER') return false;
+    return true;
+}
+
+function calculateWolfTarget(room) {
+    const counts = new Map();
+    connectedPlayers(room)
+        .filter(player => room.gamePlayers.find(candidate => candidate.id === player.id)?.role === 'werewolf')
+        .forEach(player => {
+            const targetId = room.wolfTargets.get(player.id);
+            if (targetId) counts.set(targetId, (counts.get(targetId) || 0) + 1);
+        });
+    const highestCount = Math.max(0, ...counts.values());
+    const leaders = [...counts.entries()].filter(([, count]) => count === highestCount);
+    return leaders.length === 1 && highestCount > 0 ? leaders[0][0] : null;
+}
+
+function validLivingTarget(room, targetId) {
+    return typeof targetId === 'string'
+        && room.gamePlayers.some(player => player.id === targetId && player.isAlive);
+}
+
+function winnerFor(room) {
+    const living = room.gamePlayers.filter(player => player.isAlive);
+    const wolves = living.filter(player => player.role === 'werewolf').length;
+    const villagers = living.length - wolves;
+    if (wolves === 0) return '好人阵营获胜';
+    if (wolves >= villagers) return '狼人阵营获胜';
+    return null;
+}
+
+function resolveRound(room) {
+    const eliminatedIds = new Set();
+    const wolfCounts = new Map();
+    connectedPlayers(room)
+        .filter(player => room.gamePlayers.find(candidate => candidate.id === player.id)?.role === 'werewolf')
+        .forEach(player => {
+            const targetId = room.wolfTargets.get(player.id);
+            if (targetId) wolfCounts.set(targetId, (wolfCounts.get(targetId) || 0) + 1);
+        });
+    const highestWolfVotes = Math.max(0, ...wolfCounts.values());
+    const wolfWinners = [...wolfCounts.entries()].filter(([, count]) => count === highestWolfVotes);
+    room.wolfTargetId = wolfWinners.length === 1 && highestWolfVotes > 0 ? wolfWinners[0][0] : null;
+
+    if (room.wolfTargetId && room.witchSaveTargetId !== room.wolfTargetId) {
+        eliminatedIds.add(room.wolfTargetId);
+    }
+    if (room.witchPoisonTargetId) eliminatedIds.add(room.witchPoisonTargetId);
+
+    const voteCounts = new Map();
+    connectedPlayers(room)
+        .filter(player => room.gamePlayers.find(candidate => candidate.id === player.id)?.isAlive)
+        .forEach(player => {
+            const targetId = room.votes.get(player.id);
+            if (targetId) voteCounts.set(targetId, (voteCounts.get(targetId) || 0) + 1);
+        });
+    const highestVoteCount = Math.max(0, ...voteCounts.values());
+    const voteWinners = [...voteCounts.entries()].filter(([, count]) => count === highestVoteCount);
+    if (voteWinners.length === 1 && highestVoteCount > 0) eliminatedIds.add(voteWinners[0][0]);
+
+    room.eliminatedPlayerIds = [...eliminatedIds];
+    room.gamePlayers.forEach(player => {
+        if (eliminatedIds.has(player.id)) player.isAlive = false;
+    });
+    const names = room.gamePlayers
+        .filter(player => eliminatedIds.has(player.id))
+        .map(player => player.name);
+    const winner = winnerFor(room);
+    const usedSavePotion = room.witchSaveTargetId !== null;
+    const usedPoisonPotion = room.witchPoisonTargetId !== null;
+    room.phase = winner ? 'GAME_OVER' : 'NIGHT_WEREWOLF';
     room.readyPlayerIds.clear();
     room.gamePlayers.forEach(player => {
         player.isReady = false;
     });
+    room.wolfTargets.clear();
+    room.witchSaveTargetId = null;
+    room.witchPoisonTargetId = null;
+    room.votes.clear();
+    room.seerResult = null;
+    room.wolfTargetId = null;
+    if (room.phase === 'NIGHT_WEREWOLF') {
+        room.witchPotions.saveUsed = room.witchPotions.saveUsed || usedSavePotion;
+        room.witchPotions.poisonUsed = room.witchPotions.poisonUsed || usedPoisonPotion;
+    }
+    const result = names.length > 0
+        ? `本轮淘汰：${names.join('、')}。`
+        : '本轮无人淘汰。';
+    broadcastRoomEvent(room, { playerId: null, text: result });
+    if (winner) broadcastRoomEvent(room, { playerId: null, text: `游戏结束：${winner}！` });
+    else broadcastRoomEvent(room, { playerId: null, text: '游戏继续，进入下一轮。' });
+    broadcastGameProgress(room);
+}
+
+function advanceGamePhase(room) {
+    clearReadyCountdown(room);
+    if (room.phase === 'DAY_VOTE') {
+        resolveRound(room);
+        startReadyCountdown(room);
+        return;
+    }
+    const nextPhases = {
+        ROLE_REVEAL: 'NIGHT_WEREWOLF',
+        NIGHT_WEREWOLF: 'NIGHT_WITCH',
+        NIGHT_WITCH: 'NIGHT_SEER',
+        NIGHT_SEER: 'DAY_VOTE'
+    };
+    if (!nextPhases[room.phase]) return;
+    if (room.phase === 'NIGHT_WITCH') {
+        room.witchPotions.saveUsed = room.witchPotions.saveUsed || room.witchSaveTargetId !== null;
+        room.witchPotions.poisonUsed = room.witchPotions.poisonUsed || room.witchPoisonTargetId !== null;
+    }
+    room.phase = nextPhases[room.phase];
+    room.readyPlayerIds.clear();
+    room.gamePlayers.forEach(player => {
+        player.isReady = false;
+    });
+    room.seerResult = null;
+    room.seerTargetId = null;
     broadcastGameProgress(room);
     broadcastRoomEvent(room, {
         playerId: null,
-        text: room.phase === 'DAY_DISCUSS'
-            ? '天亮了，进入白天讨论阶段。'
-            : '夜幕降临，进入狼人阶段。'
+        text: ({
+            NIGHT_WITCH: '狼人行动结束，进入女巫行动阶段。',
+            NIGHT_SEER: '女巫行动结束，进入预言家查验阶段。',
+            DAY_VOTE: '夜晚行动结束，进入讨论与投票阶段。',
+            NIGHT_WEREWOLF: '夜幕降临，进入狼人行动阶段。'
+        })[room.phase] || '游戏阶段已更新。'
     });
 }
 
 function startReadyCountdown(room) {
-    if (room.countdownTimer) return;
+    if (room.countdownTimer || room.phase === 'GAME_OVER') return;
+    if (!phaseActionsComplete(room)) return;
     const activePlayers = connectedPlayers(room);
     if (activePlayers.length === 0 || activePlayers.some(player =>
         !room.readyPlayerIds.has(player.id)
@@ -271,19 +429,132 @@ function handleMessage(client, message) {
             sendError(client, '游戏尚未开始。');
             return;
         }
-        if (room.countdownTimer && message.isReady === false) {
-            updateReadiness(room, client, false);
+        if (room.phase === 'GAME_OVER') {
+            sendError(client, '本局游戏已经结束。');
             return;
         }
         if (typeof message.isReady !== 'boolean') {
             sendError(client, '准备状态无效。');
             return;
         }
+        if (room.countdownTimer && message.isReady === false) {
+            updateReadiness(room, client, false);
+            return;
+        }
         if (room.countdownTimer) {
             sendError(client, '倒计时已经开始，无法更改准备状态。');
             return;
         }
+        const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
+        if (!gamePlayer?.isAlive) {
+            sendError(client, '淘汰玩家不能提交准备状态。');
+            return;
+        }
+        if (
+            message.isReady
+            && room.phase === 'NIGHT_WEREWOLF'
+            && gamePlayer.role === 'werewolf'
+            && !room.wolfTargets.has(client.id)
+        ) {
+            sendError(client, '请先选择狼人袭击目标。');
+            return;
+        }
+        if (message.isReady && room.phase === 'DAY_VOTE' && !room.votes.has(client.id)) {
+            sendError(client, '请先提交投票。');
+            return;
+        }
         updateReadiness(room, client, message.isReady);
+        return;
+    }
+
+    if (message.type === 'game-action') {
+        const room = roomFor(client);
+        if (!room || !room.started || room.phase === 'GAME_OVER') {
+            sendError(client, '当前无法进行游戏行动。');
+            return;
+        }
+        if (room.countdownTimer) {
+            sendError(client, '倒计时已经开始，无法更改行动。');
+            return;
+        }
+        const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
+        if (!gamePlayer?.isAlive) {
+            sendError(client, '淘汰玩家不能进行行动。');
+            return;
+        }
+        if (gamePlayer.isReady) {
+            sendError(client, '你已准备就绪，请先取消准备再修改行动。');
+            return;
+        }
+        const { action, targetId } = message;
+        if (typeof action !== 'string') {
+            sendError(client, '行动类型无效。');
+            return;
+        }
+        if (action === 'wolf-target') {
+            if (room.phase !== 'NIGHT_WEREWOLF' || gamePlayer.role !== 'werewolf') {
+                sendError(client, '当前阶段不能选择狼人袭击目标。');
+                return;
+            }
+            const target = room.gamePlayers.find(player => player.id === targetId && player.isAlive);
+            if (!target || target.role === 'werewolf') {
+                sendError(client, '袭击目标无效。');
+                return;
+            }
+            room.wolfTargets.set(client.id, target.id);
+        } else if (action === 'witch-save' || action === 'witch-poison') {
+            if (room.phase !== 'NIGHT_WITCH' || gamePlayer.role !== 'witch') {
+                sendError(client, '当前阶段不能使用女巫药剂。');
+                return;
+            }
+            const potion = action === 'witch-save' ? 'save' : 'poison';
+            const potionUsed = potion === 'save'
+                ? room.witchPotions.saveUsed
+                : room.witchPotions.poisonUsed;
+            if (potionUsed && targetId !== null) {
+                sendError(client, '这瓶药剂本局已经使用过。');
+                return;
+            }
+            if (targetId === null) {
+                if (potion === 'save') room.witchSaveTargetId = null;
+                else room.witchPoisonTargetId = null;
+            } else if (!validLivingTarget(room, targetId)) {
+                sendError(client, '药剂目标无效。');
+                return;
+            } else if (potion === 'save') {
+                if (targetId !== room.wolfTargetId) {
+                    sendError(client, '解药只能救助今晚被狼人袭击的玩家。');
+                    return;
+                }
+                room.witchSaveTargetId = targetId;
+            } else {
+                room.witchPoisonTargetId = targetId;
+            }
+        } else if (action === 'seer-check') {
+            if (room.phase !== 'NIGHT_SEER' || gamePlayer.role !== 'seer') {
+                sendError(client, '当前阶段不能进行预言家查验。');
+                return;
+            }
+            if (!validLivingTarget(room, targetId) || targetId === client.id) {
+                sendError(client, '查验目标无效。');
+                return;
+            }
+            room.seerTargetId = targetId;
+            room.seerResult = room.gamePlayers.find(player => player.id === targetId)?.role ?? null;
+        } else if (action === 'vote') {
+            if (room.phase !== 'DAY_VOTE' || !validLivingTarget(room, targetId) || targetId === client.id) {
+                sendError(client, '投票目标无效。');
+                return;
+            }
+            room.votes.set(client.id, targetId);
+            room.readyPlayerIds.delete(client.id);
+            gamePlayer.isReady = false;
+        } else {
+            sendError(client, '不支持的游戏行动。');
+            return;
+        }
+        room.wolfTargetId = calculateWolfTarget(room);
+        broadcastGameProgress(room);
         return;
     }
 
@@ -307,11 +578,20 @@ function handleMessage(client, message) {
         }
 
         room.started = true;
-        room.phase = 'NIGHT_WEREWOLF';
+        room.phase = 'ROLE_REVEAL';
         room.readyPlayerIds = new Set();
         room.countdownTimer = null;
         room.countdownEndsAt = null;
         room.countdownSeconds = null;
+        room.witchPotions = { saveUsed: false, poisonUsed: false };
+        room.wolfTargets = new Map();
+        room.witchSaveTargetId = null;
+        room.witchPoisonTargetId = null;
+        room.wolfTargetId = null;
+        room.seerTargetId = null;
+        room.seerResult = null;
+        room.votes = new Map();
+        room.eliminatedPlayerIds = [];
         const roles = shuffledRoles(room.players.length);
         room.gamePlayers = room.players.map((player, index) => ({
             id: player.id,
@@ -324,7 +604,15 @@ function handleMessage(client, message) {
         room.players.forEach(player => send(player, {
             type: 'game-started',
             phase: room.phase,
-            players: room.gamePlayers
+            role: room.gamePlayers.find(gamePlayer => gamePlayer.id === player.id)?.role ?? null,
+            players: room.gamePlayers.map(gamePlayer => ({
+                id: gamePlayer.id,
+                name: gamePlayer.name,
+                role: 'unassigned',
+                isAlive: gamePlayer.isAlive,
+                isConnected: gamePlayer.isConnected,
+                isReady: false
+            }))
         }));
         broadcastGameProgress(room);
         broadcastRoomEvent(room, {
@@ -347,6 +635,8 @@ function leaveRoom(client) {
     if (room.started) {
         clearReadyCountdown(room);
         room.readyPlayerIds.delete(client.id);
+        room.wolfTargets.delete(client.id);
+        room.votes.delete(client.id);
     }
     room.players = room.players.filter(player => player.id !== client.id);
     client.roomCode = null;
@@ -475,7 +765,15 @@ webSocketServer.on('connection', (socket, request) => {
             send(client, {
                 type: 'game-started',
                 phase: existingPlayer.room.phase,
-                players: existingPlayer.room.gamePlayers
+                role: gamePlayer?.role ?? null,
+                players: existingPlayer.room.gamePlayers.map(player => ({
+                    id: player.id,
+                    name: player.name,
+                    role: 'unassigned',
+                    isAlive: player.isAlive,
+                    isConnected: player.isConnected,
+                    isReady: existingPlayer.room.readyPlayerIds.has(player.id)
+                }))
             });
             broadcastGameProgress(existingPlayer.room);
         } else {
@@ -518,6 +816,7 @@ webSocketServer.on('connection', (socket, request) => {
                 isConnected: false
             }));
             broadcastGameProgress(room);
+            startReadyCountdown(room);
         } else {
             broadcastRoomState(room);
         }
