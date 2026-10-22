@@ -6,9 +6,25 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node server.js"
+    "build": "vue-tsc --noEmit && webpack --mode production",
+    "start": "npm run build && node server.js"
   },
   "dependencies": {
+    "@primeuix/themes": "^1.2.3",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.3.5",
+    "vue": "^3.5.44",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "css-loader": "^7.1.2",
+    "html-webpack-plugin": "^5.6.3",
+    "style-loader": "^4.0.0",
+    "ts-loader": "^9.6.2",
+    "typescript": "^5.9.3",
+    "vue-loader": "^17.4.2",
+    "vue-tsc": "^3.3.13",
+    "webpack": "^5.98.0",
+    "webpack-cli": "^6.0.1"
   }
 }

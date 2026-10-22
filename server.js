@@ -9,7 +9,7 @@ const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 8;
 const CODE_CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const rooms = new Map();
-const indexPath = path.join(__dirname, 'index.html');
+const buildDirectory = path.join(__dirname, 'dist');
 
 function send(client, message) {
     if (client.socket.readyState === WebSocket.OPEN) {
@@ -185,22 +185,59 @@ function leaveRoom(client) {
 
 const server = http.createServer((request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
-    if (request.method !== 'GET' || (pathname !== '/' && pathname !== '/index.html')) {
+    if (request.method !== 'GET') {
         response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
         response.end('Not found');
         return;
     }
 
-    fs.readFile(indexPath, (error, content) => {
+    let decodedPathname;
+    try {
+        decodedPathname = decodeURIComponent(pathname);
+    } catch (error) {
+        response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        response.end('Invalid path');
+        return;
+    }
+
+    const relativePath = decodedPathname === '/' ? 'index.html' : decodedPathname.slice(1);
+    const filePath = path.resolve(buildDirectory, relativePath);
+    const resolvedRelativePath = path.relative(buildDirectory, filePath);
+    const isOutsideBuildDirectory = resolvedRelativePath === '..'
+        || resolvedRelativePath.startsWith(`..${path.sep}`)
+        || path.isAbsolute(resolvedRelativePath);
+    if (isOutsideBuildDirectory) {
+        response.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        response.end('Forbidden');
+        return;
+    }
+
+    fs.readFile(filePath, (error, content) => {
         if (error) {
-            console.error('Unable to read index.html:', error);
-            response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-            response.end('Unable to load the game page.');
+            if (error.code !== 'ENOENT') {
+                console.error(`Unable to read ${filePath}:`, error);
+            }
+            response.writeHead(error.code === 'ENOENT' ? 404 : 500, {
+                'Content-Type': 'text/plain; charset=utf-8'
+            });
+            response.end(error.code === 'ENOENT' ? 'Not found' : 'Unable to load the requested file.');
             return;
         }
+
+        const extension = path.extname(filePath);
+        const contentTypes = {
+            '.html': 'text/html; charset=utf-8',
+            '.js': 'text/javascript; charset=utf-8',
+            '.css': 'text/css; charset=utf-8',
+            '.eot': 'application/vnd.ms-fontobject',
+            '.svg': 'image/svg+xml',
+            '.ttf': 'font/ttf',
+            '.woff': 'font/woff',
+            '.woff2': 'font/woff2'
+        };
         response.writeHead(200, {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': 'no-store'
+            'Content-Type': contentTypes[extension] || 'application/octet-stream',
+            'Cache-Control': extension === '.html' ? 'no-store' : 'public, max-age=31536000, immutable'
         });
         response.end(content);
     });
