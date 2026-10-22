@@ -58,11 +58,20 @@ function broadcastRoomState(room) {
     room.players.forEach(player => send(player, message));
 }
 
+function broadcastRoomEvent(room, event) {
+    const message = { type: 'room-event', ...event };
+    room.players.forEach(player => send(player, message));
+}
+
 function enterRoom(client, name, room) {
     client.name = name;
     client.roomCode = room.code;
     room.players.push(client);
     broadcastRoomState(room);
+    broadcastRoomEvent(room, {
+        playerId: client.id,
+        text: room.players.length === 1 ? `${name} 创建了房间。` : `${name} 加入了房间。`
+    });
 }
 
 function shuffledRoles(playerCount) {
@@ -150,8 +159,31 @@ function handleMessage(client, message) {
             sendError(client, '昵称需为 1-24 个字符。');
             return;
         }
+        const previousName = client.name;
         client.name = name;
         broadcastRoomState(room);
+        broadcastRoomEvent(room, {
+            playerId: client.id,
+            text: `${previousName} 将昵称改为 ${name}。`
+        });
+        return;
+    }
+
+    if (message.type === 'memo-entry') {
+        const room = roomFor(client);
+        if (!room) {
+            sendError(client, '你不在房间中。');
+            return;
+        }
+        const text = typeof message.text === 'string' ? message.text.trim() : '';
+        if (!text || text.length > 300) {
+            sendError(client, '备忘录内容无效。');
+            return;
+        }
+        broadcastRoomEvent(room, {
+            playerId: client.id,
+            text
+        });
         return;
     }
 
@@ -184,6 +216,10 @@ function handleMessage(client, message) {
             isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
         }));
         room.players.forEach(player => send(player, { type: 'game-started', players: room.gamePlayers }));
+        broadcastRoomEvent(room, {
+            playerId: client.id,
+            text: `${client.name} 开始了游戏。`
+        });
         return;
     }
 
@@ -194,6 +230,7 @@ function leaveRoom(client) {
     const room = roomFor(client);
     if (!room) return;
 
+    const leavingName = client.name;
     if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
     client.reconnectTimer = null;
     room.players = room.players.filter(player => player.id !== client.id);
@@ -206,6 +243,10 @@ function leaveRoom(client) {
         room.hostId = room.players[0].id;
     }
     if (!room.started) broadcastRoomState(room);
+    broadcastRoomEvent(room, {
+        playerId: client.id,
+        text: `${leavingName} 离开了房间。`
+    });
 }
 
 function playerInRoom(playerId) {
@@ -298,7 +339,7 @@ webSocketServer.on('connection', (socket, request) => {
     client.socket = socket;
     if (previousSocket && previousSocket !== socket) previousSocket.close();
 
-    send(client, { type: 'connected', playerId: client.id, resumed: Boolean(existingPlayer) });
+    send(client, { type: 'connected', playerId: client.id });
     if (existingPlayer) {
         if (existingPlayer.room.started) {
             const gamePlayer = existingPlayer.room.gamePlayers?.find(player => player.id === client.id);
@@ -312,6 +353,10 @@ webSocketServer.on('connection', (socket, request) => {
         } else {
             broadcastRoomState(existingPlayer.room);
         }
+        broadcastRoomEvent(existingPlayer.room, {
+            playerId: client.id,
+            text: `${client.name} 重新连接了房间。`
+        });
     }
 
     socket.on('message', rawMessage => {
@@ -342,6 +387,10 @@ webSocketServer.on('connection', (socket, request) => {
         } else {
             broadcastRoomState(room);
         }
+        broadcastRoomEvent(room, {
+            playerId: client.id,
+            text: `${client.name} 暂时离线。`
+        });
 
         client.reconnectTimer = setTimeout(() => leaveRoom(client), RECONNECT_GRACE_PERIOD_MS);
         client.reconnectTimer.unref();

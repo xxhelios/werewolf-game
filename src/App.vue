@@ -36,11 +36,17 @@ interface GamePlayer {
 }
 
 type ServerMessage =
-    | { type: 'connected'; playerId: string; resumed: boolean }
+    | { type: 'connected'; playerId: string }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
     | { type: 'game-started'; players: GamePlayer[] }
     | { type: 'player-connection'; playerId: string; isConnected: boolean }
+    | { type: 'room-event'; playerId: string; text: string }
     | { type: 'error'; message: string };
+
+interface MemoEntry {
+    text: string;
+    isOwnAction: boolean;
+}
 
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 8;
@@ -68,12 +74,11 @@ const roomError = ref('');
 const waitingNote = ref('等待房主开始游戏...');
 const roomStarted = ref(false);
 const nightTarget = ref<string | null>(null);
-const logs = ref(['[系统] 创建房间或输入房间码加入好友的房间。']);
+const logs = ref<MemoEntry[]>([{ text: '[系统] 创建房间或输入房间码加入好友的房间。', isOwnAction: false }]);
 const logContainer = ref<HTMLDivElement | null>(null);
 
 let roomConnection: WebSocket | null = null;
 let phaseTimer: ReturnType<typeof setTimeout> | null = null;
-let rejoiningRoom = false;
 
 const hostId = ref<string | null>(null);
 const isHost = computed(() => Boolean(playerId.value) && hostId.value === playerId.value);
@@ -158,8 +163,8 @@ function isGamePlayerList(value: unknown): value is GamePlayer[] {
 function parseServerMessage(value: unknown): ServerMessage | null {
     if (!isRecord(value) || typeof value.type !== 'string') return null;
 
-    if (value.type === 'connected' && typeof value.playerId === 'string' && typeof value.resumed === 'boolean') {
-        return { type: 'connected', playerId: value.playerId, resumed: value.resumed };
+    if (value.type === 'connected' && typeof value.playerId === 'string') {
+        return { type: 'connected', playerId: value.playerId };
     }
     if (value.type === 'error' && typeof value.message === 'string') {
         return { type: 'error', message: value.message };
@@ -200,11 +205,25 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             isConnected: value.isConnected
         };
     }
+    if (
+        value.type === 'room-event'
+        && typeof value.playerId === 'string'
+        && typeof value.text === 'string'
+    ) {
+        return {
+            type: 'room-event',
+            playerId: value.playerId,
+            text: value.text
+        };
+    }
     return null;
 }
 
-async function addLog(text: string): Promise<void> {
-    logs.value.push(`[${new Date().toLocaleTimeString()}] ${text}`);
+async function addLog(text: string, actorId: string | null = null): Promise<void> {
+    logs.value.push({
+        text: `[${new Date().toLocaleTimeString()}] ${text}`,
+        isOwnAction: actorId !== null && actorId === playerId.value
+    });
     await nextTick();
     if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight;
 }
@@ -223,6 +242,10 @@ function sendRoomMessage(message: Record<string, string>): void {
         return;
     }
     roomConnection.send(JSON.stringify(message));
+}
+
+function broadcastMemo(text: string): void {
+    sendRoomMessage({ type: 'memo-entry', text });
 }
 
 function validatedPlayerName(): string | null {
@@ -256,7 +279,6 @@ function joinRoom(): void {
 function handleRoomMessage(message: ServerMessage): void {
     if (message.type === 'connected') {
         playerId.value = message.playerId;
-        rejoiningRoom = message.resumed;
         try {
             localStorage.setItem(PLAYER_ID_STORAGE_KEY, message.playerId);
         } catch (error) {
@@ -271,8 +293,6 @@ function handleRoomMessage(message: ServerMessage): void {
         return;
     }
     if (message.type === 'room-state') {
-        const previousRoomCode = roomCode.value;
-        const previousPlayers = players.value;
         roomCode.value = message.room.code;
         hostId.value = message.room.hostId;
         players.value = message.room.players.map(player => ({
@@ -282,26 +302,19 @@ function handleRoomMessage(message: ServerMessage): void {
             isConnected: player.isConnected,
             isMe: player.id === playerId.value
         }));
-        if (!previousRoomCode) {
+        if (!renameName.value) {
             renameName.value = players.value.find(player => player.isMe)?.name ?? '';
-            void addLog(`${rejoiningRoom ? '已重新加入' : '已加入'}房间 ${roomCode.value}。`);
-            rejoiningRoom = false;
         } else {
-            const previousOwnName = previousPlayers.find(player => player.isMe)?.name;
             const currentOwnName = players.value.find(player => player.isMe)?.name;
-            if (previousOwnName && currentOwnName && previousOwnName !== currentOwnName) {
+            if (currentOwnName) {
                 renameName.value = currentOwnName;
-                void addLog(`你将昵称改为 ${currentOwnName}。`);
             }
-            const joinedPlayer = players.value.find(player =>
-                !previousPlayers.some(previous => previous.id === player.id)
-            );
-            const leftPlayer = previousPlayers.find(player =>
-                !players.value.some(current => current.id === player.id)
-            );
-            if (joinedPlayer) void addLog(`${joinedPlayer.name} 加入了房间。`);
-            if (leftPlayer) void addLog(`${leftPlayer.name} 离开了房间。`);
         }
+        return;
+    }
+
+    if (message.type === 'room-event') {
+        void addLog(message.text, message.playerId);
         return;
     }
 
@@ -317,7 +330,6 @@ function handleRoomMessage(message: ServerMessage): void {
         isMe: player.id === playerId.value
     }));
     phase.value = 'NIGHT_WEREWOLF';
-    void addLog('房主已开始游戏！天黑请闭眼，所有玩家已隐藏身份。');
     void addLog('【夜晚阶段】狼人请睁眼，选择今晚要袭击的目标。');
 }
 
@@ -407,7 +419,7 @@ function advanceNight(): void {
 
 function attackPlayer(player: Player): void {
     nightTarget.value = player.id;
-    void addLog(`你（狼人）锁定了袭击目标：${player.name}`);
+    broadcastMemo(`你（狼人）锁定了袭击目标：${player.name}`);
     if (phaseTimer) clearTimeout(phaseTimer);
     phaseTimer = setTimeout(advanceNight, 1000);
 }
@@ -419,7 +431,7 @@ function voteOutPlayer(): void {
     const victim = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
     victim.isAlive = false;
     const roleName = victim.role === 'unassigned' ? '未知' : roleInfo[victim.role].name;
-    void addLog(`[投票结果] 大家投票将 ${victim.name} 逐出了局！其身份是：${roleName}`);
+    broadcastMemo(`[投票结果] 大家投票将 ${victim.name} 逐出了局！其身份是：${roleName}`);
 
     const aliveWolves = players.value.filter(player =>
         player.role === 'werewolf' && player.isAlive
@@ -591,10 +603,15 @@ onUnmounted(() => {
                 </Card>
 
                 <Card class="logs-card">
-                    <template #title>游戏战报流水</template>
+                    <template #title>游戏备忘录</template>
                     <template #content>
                         <div ref="logContainer" class="log-list" aria-live="polite">
-                            <div v-for="(entry, index) in logs" :key="index" class="log-entry">{{ entry }}</div>
+                            <div
+                                v-for="(entry, index) in logs"
+                                :key="index"
+                                class="log-entry"
+                                :class="{ 'own-action': entry.isOwnAction }"
+                            >{{ entry.text }}</div>
                         </div>
                     </template>
                 </Card>
@@ -867,6 +884,11 @@ button, input {
     padding-left: 10px;
     border-left: 2px solid var(--p-primary-500);
     overflow-wrap: anywhere;
+}
+
+.log-entry.own-action {
+    border-left-color: var(--p-blue-400);
+    color: var(--p-blue-300);
 }
 
 .player-list {
