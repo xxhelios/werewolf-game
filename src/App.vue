@@ -17,12 +17,14 @@ interface Player {
     name: string;
     role: Role | 'unassigned';
     isAlive: boolean;
+    isConnected: boolean;
     isMe: boolean;
 }
 
 interface RoomPlayer {
     id: string;
     name: string;
+    isConnected: boolean;
 }
 
 interface GamePlayer {
@@ -30,17 +32,21 @@ interface GamePlayer {
     name: string;
     role: Role;
     isAlive: boolean;
+    isConnected: boolean;
 }
 
 type ServerMessage =
-    | { type: 'connected'; playerId: string }
+    | { type: 'connected'; playerId: string; resumed: boolean }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
     | { type: 'game-started'; players: GamePlayer[] }
+    | { type: 'player-connection'; playerId: string; isConnected: boolean }
     | { type: 'error'; message: string };
 
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 8;
 const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
+const PLAYER_ID_STORAGE_KEY = 'werewolf-player-id';
+const PLAYER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const roleInfo: Record<Role, { name: string; tip: string }> = {
     werewolf: { name: '🐺 狼人', tip: '每晚寻找目标并击杀一名好人。' },
@@ -51,6 +57,7 @@ const roleInfo: Record<Role, { name: string; tip: string }> = {
 
 const toast = useToast();
 const playerName = ref('Player');
+const renameName = ref('');
 const roomCodeInput = ref('');
 const roomCode = ref<string | null>(null);
 const playerId = ref<string | null>(null);
@@ -66,6 +73,7 @@ const logContainer = ref<HTMLDivElement | null>(null);
 
 let roomConnection: WebSocket | null = null;
 let phaseTimer: ReturnType<typeof setTimeout> | null = null;
+let rejoiningRoom = false;
 
 const hostId = ref<string | null>(null);
 const isHost = computed(() => Boolean(playerId.value) && hostId.value === playerId.value);
@@ -129,7 +137,10 @@ function isRole(value: unknown): value is Role {
 
 function isRoomPlayerList(value: unknown): value is RoomPlayer[] {
     return Array.isArray(value) && value.every(player =>
-        isRecord(player) && typeof player.id === 'string' && typeof player.name === 'string'
+        isRecord(player)
+        && typeof player.id === 'string'
+        && typeof player.name === 'string'
+        && typeof player.isConnected === 'boolean'
     );
 }
 
@@ -140,14 +151,15 @@ function isGamePlayerList(value: unknown): value is GamePlayer[] {
         && typeof player.name === 'string'
         && isRole(player.role)
         && typeof player.isAlive === 'boolean'
+        && typeof player.isConnected === 'boolean'
     );
 }
 
 function parseServerMessage(value: unknown): ServerMessage | null {
     if (!isRecord(value) || typeof value.type !== 'string') return null;
 
-    if (value.type === 'connected' && typeof value.playerId === 'string') {
-        return { type: 'connected', playerId: value.playerId };
+    if (value.type === 'connected' && typeof value.playerId === 'string' && typeof value.resumed === 'boolean') {
+        return { type: 'connected', playerId: value.playerId, resumed: value.resumed };
     }
     if (value.type === 'error' && typeof value.message === 'string') {
         return { type: 'error', message: value.message };
@@ -163,7 +175,11 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             room: {
                 code,
                 hostId,
-                players: roomPlayers.map(player => ({ id: player.id, name: player.name }))
+                players: roomPlayers.map(player => ({
+                    id: player.id,
+                    name: player.name,
+                    isConnected: player.isConnected
+                }))
             }
         };
     }
@@ -171,6 +187,17 @@ function parseServerMessage(value: unknown): ServerMessage | null {
         return {
             type: 'game-started',
             players: value.players
+        };
+    }
+    if (
+        value.type === 'player-connection'
+        && typeof value.playerId === 'string'
+        && typeof value.isConnected === 'boolean'
+    ) {
+        return {
+            type: 'player-connection',
+            playerId: value.playerId,
+            isConnected: value.isConnected
         };
     }
     return null;
@@ -229,6 +256,13 @@ function joinRoom(): void {
 function handleRoomMessage(message: ServerMessage): void {
     if (message.type === 'connected') {
         playerId.value = message.playerId;
+        rejoiningRoom = message.resumed;
+        try {
+            localStorage.setItem(PLAYER_ID_STORAGE_KEY, message.playerId);
+        } catch (error) {
+            console.error('Unable to persist player identity.', error);
+            setRoomError('无法保存玩家身份，刷新后将无法自动返回房间。');
+        }
         connectionState.value = 'connected';
         return;
     }
@@ -245,11 +279,20 @@ function handleRoomMessage(message: ServerMessage): void {
             ...player,
             role: 'unassigned',
             isAlive: true,
+            isConnected: player.isConnected,
             isMe: player.id === playerId.value
         }));
         if (!previousRoomCode) {
-            void addLog(`已加入房间 ${roomCode.value}。`);
+            renameName.value = players.value.find(player => player.isMe)?.name ?? '';
+            void addLog(`${rejoiningRoom ? '已重新加入' : '已加入'}房间 ${roomCode.value}。`);
+            rejoiningRoom = false;
         } else {
+            const previousOwnName = previousPlayers.find(player => player.isMe)?.name;
+            const currentOwnName = players.value.find(player => player.isMe)?.name;
+            if (previousOwnName && currentOwnName && previousOwnName !== currentOwnName) {
+                renameName.value = currentOwnName;
+                void addLog(`你将昵称改为 ${currentOwnName}。`);
+            }
             const joinedPlayer = players.value.find(player =>
                 !previousPlayers.some(previous => previous.id === player.id)
             );
@@ -259,6 +302,12 @@ function handleRoomMessage(message: ServerMessage): void {
             if (joinedPlayer) void addLog(`${joinedPlayer.name} 加入了房间。`);
             if (leftPlayer) void addLog(`${leftPlayer.name} 离开了房间。`);
         }
+        return;
+    }
+
+    if (message.type === 'player-connection') {
+        const player = players.value.find(candidate => candidate.id === message.playerId);
+        if (player) player.isConnected = message.isConnected;
         return;
     }
 
@@ -281,7 +330,13 @@ function connectToRoomService(): void {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const websocketUrl = __WEBSOCKET_URL__ || `${protocol}//${window.location.host}`;
+    const websocketUrl = new URL(__WEBSOCKET_URL__ || `${protocol}//${window.location.host}`);
+    if (!playerId.value) {
+        connectionState.value = 'failed';
+        setRoomError('无法识别玩家身份，请刷新页面重试。');
+        return;
+    }
+    websocketUrl.searchParams.set('playerId', playerId.value);
     roomConnection = new WebSocket(websocketUrl);
     roomConnection.addEventListener('open', () => {
         connectionState.value = 'connected';
@@ -328,6 +383,20 @@ async function copyRoomCode(): Promise<void> {
 
 function startGame(): void {
     if (isHost.value) sendRoomMessage({ type: 'start-game' });
+}
+
+function changePlayerName(): void {
+    const name = renameName.value.trim();
+    if (!name || name.length > 24) {
+        setRoomError('昵称需为 1-24 个字符。');
+        return;
+    }
+    if (name === currentPlayer.value?.name) {
+        setRoomError('');
+        return;
+    }
+    setRoomError('');
+    sendRoomMessage({ type: 'change-name', name });
 }
 
 function advanceNight(): void {
@@ -397,6 +466,17 @@ onMounted(() => {
         setRoomError('请先运行 npm start，再通过 http://localhost:3000 打开游戏。');
         return;
     }
+    try {
+        const savedPlayerId = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
+        playerId.value = savedPlayerId && PLAYER_ID_PATTERN.test(savedPlayerId)
+            ? savedPlayerId
+            : crypto.randomUUID();
+    } catch (error) {
+        console.error('Unable to access saved player identity.', error);
+        connectionState.value = 'failed';
+        setRoomError('无法读取玩家身份，浏览器存储不可用。');
+        return;
+    }
     connectToRoomService();
 });
 onUnmounted(() => {
@@ -436,6 +516,7 @@ onUnmounted(() => {
                             </div>
                             <Button label="创建房间" icon="pi pi-plus" @click="createRoom" />
                         </div>
+                        <div class="form-divider"><span>或者</span></div>
                         <div class="join-form">
                             <InputText
                                 v-model="roomCodeInput"
@@ -457,6 +538,16 @@ onUnmounted(() => {
                     <template #subtitle>分享房间码给好友。4-8 位玩家可以开始游戏。</template>
                     <template #content>
                         <div class="room-code">{{ roomCode }}</div>
+                        <div class="rename-form">
+                            <InputText
+                                v-model="renameName"
+                                maxlength="24"
+                                placeholder="输入新昵称"
+                                aria-label="修改昵称"
+                                @keyup.enter="changePlayerName"
+                            />
+                            <Button label="修改昵称" icon="pi pi-user-edit" severity="secondary" @click="changePlayerName" />
+                        </div>
                         <div class="action-row">
                             <Button label="复制房间码" icon="pi pi-copy" severity="secondary" @click="copyRoomCode" />
                             <Button
@@ -521,10 +612,13 @@ onUnmounted(() => {
                                 class="player-item"
                                 :class="{ 'is-dead': !player.isAlive }"
                             >
-                                <span class="player-name">{{ player.name }}</span>
+                                <span class="player-identity">
+                                    <span class="player-name">{{ player.name }}</span>
+                                    <Tag v-if="player.id === hostId" value="房主" severity="warn" class="host-tag" />
+                                </span>
                                 <Tag
-                                    :value="!player.isAlive ? '淘汰' : player.isMe ? '你' : '在线'"
-                                    :severity="!player.isAlive ? 'danger' : 'success'"
+                                    :value="!player.isAlive ? '淘汰' : !player.isConnected ? '离线' : player.isMe ? '你' : '在线'"
+                                    :severity="!player.isAlive ? 'danger' : !player.isConnected ? 'secondary' : 'success'"
                                 />
                             </li>
                             <li v-if="players.length === 0" class="empty-state">加入房间后，玩家会显示在这里。</li>
@@ -635,8 +729,7 @@ button, input {
 .name-form {
     display: grid;
     width: 100%;
-    grid-template-columns: minmax(0, 1fr) 150px;
-    align-items: end;
+    grid-template-columns: minmax(0, 1fr);
     gap: 10px;
 }
 
@@ -648,13 +741,29 @@ button, input {
     width: 100%;
 }
 
+.form-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 24px 0 16px;
+    color: var(--p-surface-400);
+    font-size: 0.85rem;
+}
+
+.form-divider::before,
+.form-divider::after {
+    flex: 1;
+    border-top: 1px solid var(--p-surface-700);
+    content: "";
+}
+
 .join-form {
     display: grid;
     width: 100%;
     grid-template-columns: minmax(0, 1fr) 150px;
     align-items: end;
     gap: 10px;
-    margin-top: 16px;
+    margin-top: 0;
 }
 
 .name-form > .p-button,
@@ -693,6 +802,14 @@ button, input {
     font-size: clamp(1.6rem, 5vw, 2.2rem);
     font-weight: 700;
     letter-spacing: 0.3em;
+}
+
+.rename-form {
+    display: grid;
+    width: min(100%, 420px);
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    margin: 0 auto 16px;
 }
 
 .waiting-note {
@@ -779,6 +896,18 @@ button, input {
     white-space: nowrap;
 }
 
+.player-identity {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+}
+
+.host-tag {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+}
+
 .player-item.is-dead {
     opacity: 0.55;
     text-decoration: line-through;
@@ -822,6 +951,10 @@ button, input {
     .join-form .p-button,
     .name-form .p-button {
         width: 100%;
+    }
+
+    .rename-form {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .role-card {

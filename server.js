@@ -7,12 +7,13 @@ const { WebSocket, WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 8;
+const RECONNECT_GRACE_PERIOD_MS = 5 * 60 * 1000;
 const CODE_CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const rooms = new Map();
 const buildDirectory = path.join(__dirname, 'dist');
 
 function send(client, message) {
-    if (client.socket.readyState === WebSocket.OPEN) {
+    if (client.socket?.readyState === WebSocket.OPEN) {
         client.socket.send(JSON.stringify(message));
     }
 }
@@ -49,7 +50,8 @@ function broadcastRoomState(room) {
             hostId: room.hostId,
             players: room.players.map(player => ({
                 id: player.id,
-                name: player.name
+                name: player.name,
+                isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
             }))
         }
     };
@@ -95,7 +97,7 @@ function handleMessage(client, message) {
             return;
         }
         const code = createRoomCode();
-        const room = { code, hostId: client.id, players: [], started: false };
+        const room = { code, hostId: client.id, players: [], started: false, gamePlayers: null };
         rooms.set(code, room);
         enterRoom(client, name, room);
         return;
@@ -133,6 +135,26 @@ function handleMessage(client, message) {
         return;
     }
 
+    if (message.type === 'change-name') {
+        const room = roomFor(client);
+        if (!room) {
+            sendError(client, '你不在房间中。');
+            return;
+        }
+        if (room.started) {
+            sendError(client, '游戏已经开始，无法修改昵称。');
+            return;
+        }
+        const name = getPlayerName(message.name);
+        if (!name) {
+            sendError(client, '昵称需为 1-24 个字符。');
+            return;
+        }
+        client.name = name;
+        broadcastRoomState(room);
+        return;
+    }
+
     if (message.type === 'start-game') {
         const room = roomFor(client);
         if (!room) {
@@ -154,13 +176,14 @@ function handleMessage(client, message) {
 
         room.started = true;
         const roles = shuffledRoles(room.players.length);
-        const players = room.players.map((player, index) => ({
+        room.gamePlayers = room.players.map((player, index) => ({
             id: player.id,
             name: player.name,
             role: roles[index],
-            isAlive: true
+            isAlive: true,
+            isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
         }));
-        room.players.forEach(player => send(player, { type: 'game-started', players }));
+        room.players.forEach(player => send(player, { type: 'game-started', players: room.gamePlayers }));
         return;
     }
 
@@ -171,6 +194,8 @@ function leaveRoom(client) {
     const room = roomFor(client);
     if (!room) return;
 
+    if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
+    client.reconnectTimer = null;
     room.players = room.players.filter(player => player.id !== client.id);
     client.roomCode = null;
     if (room.players.length === 0) {
@@ -181,6 +206,14 @@ function leaveRoom(client) {
         room.hostId = room.players[0].id;
     }
     if (!room.started) broadcastRoomState(room);
+}
+
+function playerInRoom(playerId) {
+    for (const room of rooms.values()) {
+        const player = room.players.find(candidate => candidate.id === playerId);
+        if (player) return { player, room };
+    }
+    return null;
 }
 
 const server = http.createServer((request, response) => {
@@ -245,14 +278,41 @@ const server = http.createServer((request, response) => {
 
 const webSocketServer = new WebSocketServer({ server, maxPayload: 1024 });
 
-webSocketServer.on('connection', socket => {
-    const client = {
-        id: crypto.randomUUID(),
+webSocketServer.on('connection', (socket, request) => {
+    const requestUrl = new URL(request.url, 'http://localhost');
+    const requestedPlayerId = requestUrl.searchParams.get('playerId');
+    const isValidPlayerId = typeof requestedPlayerId === 'string'
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedPlayerId);
+    const existingPlayer = isValidPlayerId ? playerInRoom(requestedPlayerId) : null;
+    const client = existingPlayer?.player ?? {
+        id: isValidPlayerId ? requestedPlayerId : crypto.randomUUID(),
         name: null,
         roomCode: null,
-        socket
+        socket: null,
+        reconnectTimer: null
     };
-    send(client, { type: 'connected', playerId: client.id });
+
+    if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
+    client.reconnectTimer = null;
+    const previousSocket = client.socket;
+    client.socket = socket;
+    if (previousSocket && previousSocket !== socket) previousSocket.close();
+
+    send(client, { type: 'connected', playerId: client.id, resumed: Boolean(existingPlayer) });
+    if (existingPlayer) {
+        if (existingPlayer.room.started) {
+            const gamePlayer = existingPlayer.room.gamePlayers?.find(player => player.id === client.id);
+            if (gamePlayer) gamePlayer.isConnected = true;
+            existingPlayer.room.players.forEach(player => send(player, {
+                type: 'player-connection',
+                playerId: client.id,
+                isConnected: true
+            }));
+            send(client, { type: 'game-started', players: existingPlayer.room.gamePlayers });
+        } else {
+            broadcastRoomState(existingPlayer.room);
+        }
+    }
 
     socket.on('message', rawMessage => {
         let message;
@@ -265,7 +325,27 @@ webSocketServer.on('connection', socket => {
         handleMessage(client, message);
     });
 
-    socket.on('close', () => leaveRoom(client));
+    socket.on('close', () => {
+        if (client.socket !== socket) return;
+        client.socket = null;
+        const room = roomFor(client);
+        if (!room) return;
+
+        if (room.started) {
+            const gamePlayer = room.gamePlayers?.find(player => player.id === client.id);
+            if (gamePlayer) gamePlayer.isConnected = false;
+            room.players.forEach(player => send(player, {
+                type: 'player-connection',
+                playerId: client.id,
+                isConnected: false
+            }));
+        } else {
+            broadcastRoomState(room);
+        }
+
+        client.reconnectTimer = setTimeout(() => leaveRoom(client), RECONNECT_GRACE_PERIOD_MS);
+        client.reconnectTimer.unref();
+    });
     socket.on('error', error => {
         console.error(`WebSocket error for player ${client.id}:`, error);
     });
