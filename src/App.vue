@@ -187,6 +187,10 @@ function setRoomError(message: string): void {
 }
 
 function sendRoomMessage(message: Record<string, string>): void {
+    if (!__WEBSOCKET_URL__ && window.location.hostname.endsWith('.github.io')) {
+        setRoomError('GitHub Pages 仅托管静态页面。请配置 WEBSOCKET_URL，指向已部署的 WebSocket 服务，然后重新构建并部署。');
+        return;
+    }
     if (!roomConnection || roomConnection.readyState !== WebSocket.OPEN) {
         setRoomError('房间服务未连接，请稍后重试。');
         return;
@@ -269,8 +273,16 @@ function handleRoomMessage(message: ServerMessage): void {
 }
 
 function connectToRoomService(): void {
+    const isGitHubPages = window.location.hostname.endsWith('.github.io');
+    if (!__WEBSOCKET_URL__ && isGitHubPages) {
+        connectionState.value = 'failed';
+        setRoomError('GitHub Pages 仅托管静态页面。请配置 WEBSOCKET_URL，指向已部署的 WebSocket 服务，然后重新构建并部署。');
+        return;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    roomConnection = new WebSocket(`${protocol}//${window.location.host}`);
+    const websocketUrl = __WEBSOCKET_URL__ || `${protocol}//${window.location.host}`;
+    roomConnection = new WebSocket(websocketUrl);
     roomConnection.addEventListener('open', () => {
         connectionState.value = 'connected';
     });
