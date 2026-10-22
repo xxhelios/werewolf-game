@@ -8,6 +8,8 @@ const PORT = Number(process.env.PORT) || 3000;
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 8;
 const READY_COUNTDOWN_SECONDS = 5;
+const HIDDEN_ACTION_DELAY_MIN_SECONDS = 5;
+const HIDDEN_ACTION_DELAY_MAX_SECONDS = 10;
 const CODE_CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const rooms = new Map();
 const buildDirectory = path.join(__dirname, 'dist');
@@ -145,6 +147,24 @@ function clearReadyCountdown(room) {
     room.countdownSeconds = null;
 }
 
+function clearHiddenActionDelay(room) {
+    if (room.hiddenActionDelayTimer) clearTimeout(room.hiddenActionDelayTimer);
+    room.hiddenActionDelayTimer = null;
+}
+
+function startHiddenActionDelay(room) {
+    clearHiddenActionDelay(room);
+    const delaySeconds = crypto.randomInt(
+        HIDDEN_ACTION_DELAY_MIN_SECONDS,
+        HIDDEN_ACTION_DELAY_MAX_SECONDS + 1
+    );
+    room.hiddenActionDelayTimer = setTimeout(() => {
+        room.hiddenActionDelayTimer = null;
+        startReadyCountdown(room);
+    }, delaySeconds * 1000);
+    room.hiddenActionDelayTimer.unref();
+}
+
 function phaseActionsComplete(room) {
     if (room.phase === 'NIGHT_WEREWOLF') {
         return phaseParticipants(room).every(player => room.wolfTargets.has(player.id));
@@ -223,6 +243,7 @@ function resolveRound(room) {
     const usedSavePotion = room.witchSaveTargetId !== null;
     const usedPoisonPotion = room.witchPoisonTargetId !== null;
     room.phase = winner ? 'GAME_OVER' : 'NIGHT_WEREWOLF';
+    clearHiddenActionDelay(room);
     room.readyPlayerIds.clear();
     room.gamePlayers.forEach(player => {
         player.isReady = false;
@@ -242,7 +263,10 @@ function resolveRound(room) {
         : '本轮无人淘汰。';
     broadcastRoomEvent(room, { playerId: null, text: result });
     if (winner) broadcastRoomEvent(room, { playerId: null, text: `游戏结束：${winner}！` });
-    else broadcastRoomEvent(room, { playerId: null, text: '游戏继续，进入下一轮。' });
+    else {
+        broadcastRoomEvent(room, { playerId: null, text: '游戏继续，进入下一轮。' });
+        if (eliminatedIds.size > 0) startHiddenActionDelay(room);
+    }
     broadcastGameProgress(room);
 }
 
@@ -285,7 +309,7 @@ function advanceGamePhase(room) {
 }
 
 function startReadyCountdown(room) {
-    if (room.countdownTimer || room.phase === 'GAME_OVER') return;
+    if (room.countdownTimer || room.hiddenActionDelayTimer || room.phase === 'GAME_OVER') return;
     if (!phaseActionsComplete(room)) return;
     const activePlayers = phaseParticipants(room);
     if (activePlayers.length === 0) {
@@ -358,6 +382,7 @@ function shuffledRoles(playerCount) {
 
 function beginGame(room, initiator) {
     clearReadyCountdown(room);
+    clearHiddenActionDelay(room);
     room.started = true;
     room.phase = 'ROLE_REVEAL';
     room.readyPlayerIds = new Set();
