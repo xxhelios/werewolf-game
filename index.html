@@ -3,9 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Discord Werewolf Activity</title>
-    <!-- 引入 Discord Embedded App SDK -->
-    <script src="https://getSourceUrlOrSdkHere"></script>
+    <title>Werewolf Game</title>
     <style>
         :root {
             --bg-dark: #313338;
@@ -215,6 +213,74 @@
             border-left: 3px solid var(--brand-color);
             padding-left: 6px;
         }
+
+        .room-code {
+            display: inline-block;
+            margin: 8px 0 16px;
+            padding: 10px 18px;
+            border: 1px dashed var(--brand-color);
+            border-radius: 8px;
+            color: var(--text-header);
+            font-family: monospace;
+            font-size: 28px;
+            font-weight: bold;
+            letter-spacing: 6px;
+        }
+
+        .room-entry {
+            max-width: 520px;
+            margin: auto;
+        }
+
+        .room-entry input {
+            min-width: 0;
+            padding: 10px 12px;
+            border: 1px solid #4e5058;
+            border-radius: 4px;
+            background: var(--bg-tertiary);
+            color: var(--text-header);
+            font-size: 14px;
+        }
+
+        .room-entry input:focus {
+            outline: 2px solid var(--brand-color);
+            outline-offset: 1px;
+        }
+
+        .room-entry-form {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .room-error {
+            min-height: 20px;
+            margin-top: 10px;
+            color: var(--danger);
+            font-size: 13px;
+        }
+
+        .waiting-note {
+            margin: 12px 0 0;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        @media (max-width: 640px) {
+            .sidebar {
+                width: 42%;
+                padding: 12px;
+            }
+
+            .game-panel {
+                padding: 12px;
+            }
+
+            .room-entry-form {
+                flex-direction: column;
+            }
+        }
     </style>
 </head>
 <body>
@@ -223,18 +289,39 @@
         <div class="room-info">
             <h1>🐺 空间狼人杀 <span class="badge" id="room-status-badge">准备阶段</span></h1>
         </div>
-        <div id="current-user-tag" style="font-size: 14px; color: var(--text-muted);">正在连接 Discord...</div>
+        <div id="current-user-tag" style="font-size: 14px; color: var(--text-muted);">正在连接房间服务...</div>
     </header>
 
     <div class="main-container">
         <!-- 左侧游戏核心面板 -->
         <div class="game-panel">
             
-            <!-- 阶段 1：大厅等待 -->
-            <div id="view-lobby" class="card">
-                <div class="phase-title">狼人杀派对房</div>
-                <div class="phase-desc">呼叫频道好友加入，凑齐人数后即可开启烧脑对决！支持 4-8 人游玩。</div>
-                <button class="btn" onclick="startGame()">🚀 随机发牌并开始游戏</button>
+            <div id="room-entry" class="card room-entry">
+                <div class="phase-title">加入狼人杀房间</div>
+                <div class="phase-desc">创建一个房间并分享房间码，或输入好友分享给你的房间码。</div>
+                <label for="player-name-input">你的昵称</label>
+                <div class="room-entry-form">
+                    <input id="player-name-input" type="text" maxlength="24" placeholder="输入昵称" value="Player">
+                    <button class="btn" id="create-room-button" type="button">创建房间</button>
+                </div>
+                <div class="room-entry-form">
+                    <input id="room-code-input" type="text" maxlength="6" placeholder="输入 6 位房间码" aria-label="房间码">
+                    <button class="btn" id="join-room-button" type="button">加入房间</button>
+                </div>
+                <div class="room-error" id="room-entry-error" role="alert"></div>
+            </div>
+
+            <!-- 阶段 1：等待玩家加入 -->
+            <div id="view-lobby" class="card" style="display: none;">
+                <div class="phase-title">等待玩家加入</div>
+                <div class="phase-desc">分享房间码给好友。4-8 位玩家可以开始游戏。</div>
+                <div class="room-code" id="room-code-display">------</div>
+                <div class="btn-group">
+                    <button class="btn" id="copy-room-code-button" type="button">复制房间码</button>
+                    <button class="btn" id="start-game-button" type="button" onclick="startGame()" disabled>等待玩家 (1/4)</button>
+                </div>
+                <p class="waiting-note" id="waiting-note">等待房主开始游戏...</p>
+                <div class="room-error" id="room-waiting-error" role="alert"></div>
             </div>
 
             <!-- 阶段 2：角色及游戏进行中 -->
@@ -259,14 +346,14 @@
             <div style="margin-top: 20px;">
                 <h3 style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">游戏战报流水</h3>
                 <div class="log-box" id="game-logs">
-                    <div class="log-item">[系统] 欢迎来到 Discord 狼人杀 Activity，点击上方按钮开始游戏。</div>
+                    <div class="log-item">[系统] 创建房间或输入房间码加入好友的房间。</div>
                 </div>
             </div>
         </div>
 
         <!-- 右侧在线成员名单 -->
         <div class="sidebar">
-            <h3>房间成员 (<span id="player-count">4</span>)</h3>
+            <h3>房间成员 (<span id="player-count">0</span>/8)</h3>
             <ul class="player-list" id="sidebar-player-list">
                 <!-- 动态渲染 -->
             </ul>
@@ -274,20 +361,22 @@
     </div>
 
     <script>
-        // 模拟本地及 Discord 基础状态
         let gameState = {
-            phase: 'LOBBY', // LOBBY, NIGHT_WEREWOLF, NIGHT_SEER, NIGHT_WITCH, DAY_DISCUSS, DAY_VOTE
-            players: [
-                { id: 1, name: 'Alex (你)', role: 'unassigned', isAlive: true, isMe: true },
-                { id: 2, name: 'Echo', role: 'unassigned', isAlive: true, isMe: false },
-                { id: 3, name: 'Nova', role: 'unassigned', isAlive: true, isMe: false },
-                { id: 4, name: 'Kite', role: 'unassigned', isAlive: true, isMe: false }
-            ],
-            myId: 1,
+            phase: 'LOBBY',
+            players: [],
+            myId: null,
             nightTarget: null,
             savedByWitch: false,
             poisonedTarget: null
         };
+
+        const MIN_PLAYERS = 4;
+        const MAX_PLAYERS = 8;
+        let roomConnection = null;
+        let playerId = null;
+        let roomCode = null;
+        let isHost = false;
+        let roomStarted = false;
 
         const roleInfoMap = {
             'werewolf': { name: '🐺 狼人', tip: '每晚寻找目标并击杀一名好人。' },
@@ -296,37 +385,198 @@
             'villager': { name: '🧑 平民', tip: '认真听取发言，通过投票找出狼人。' }
         };
 
-        // 初始化渲染
         function render() {
-            // 更新人数
             document.getElementById('player-count').textContent = gameState.players.length;
-            
-            // 渲染右侧玩家列表
+
             const listEl = document.getElementById('sidebar-player-list');
             listEl.innerHTML = '';
             gameState.players.forEach(p => {
                 const li = document.createElement('li');
                 li.className = `player-item ${p.isAlive ? '' : 'dead'}`;
-                li.innerHTML = `<span>${p.name}</span> <span>${p.isAlive ? (p.isMe ? '🟢 你' : '🟢 在线') : '💀 淘汰'}</span>`;
+                const name = document.createElement('span');
+                name.textContent = p.name;
+                const status = document.createElement('span');
+                status.textContent = p.isAlive ? (p.isMe ? '🟢 你' : '🟢 在线') : '💀 淘汰';
+                li.append(name, status);
                 listEl.appendChild(li);
             });
 
-            // 切换视图
-            if (gameState.phase === 'LOBBY') {
-                document.getElementById('view-lobby').style.display = 'block';
-                document.getElementById('view-game').style.display = 'none';
-                document.getElementById('room-status-badge').textContent = '准备阶段';
+            const hasRoom = Boolean(roomCode);
+            document.getElementById('room-entry').style.display = hasRoom ? 'none' : 'block';
+            document.getElementById('view-lobby').style.display = hasRoom && gameState.phase === 'LOBBY' ? 'block' : 'none';
+            document.getElementById('view-game').style.display = hasRoom && gameState.phase !== 'LOBBY' ? 'block' : 'none';
+
+            if (!hasRoom) {
+                document.getElementById('room-status-badge').textContent = '未加入房间';
+            } else if (gameState.phase === 'LOBBY') {
+                updateWaitingRoom();
+                document.getElementById('room-status-badge').textContent = '等待玩家';
             } else {
-                document.getElementById('view-lobby').style.display = 'none';
-                document.getElementById('view-game').style.display = 'block';
-                
+                document.getElementById('room-status-badge').textContent = '游戏进行中';
                 const me = gameState.players.find(p => p.isMe);
                 const roleData = roleInfoMap[me.role] || { name: '未知', tip: '' };
                 document.getElementById('my-role-display').textContent = roleData.name;
                 document.getElementById('my-role-tip').textContent = roleData.tip;
-
                 updatePhaseUI();
             }
+        }
+
+        function updateWaitingRoom() {
+            const count = gameState.players.length;
+            const startButton = document.getElementById('start-game-button');
+            document.getElementById('room-code-display').textContent = roomCode;
+            startButton.disabled = roomStarted || !isHost || count < MIN_PLAYERS;
+            startButton.textContent = roomStarted
+                ? '本局已开始'
+                : count < MIN_PLAYERS
+                ? `等待玩家 (${count}/${MIN_PLAYERS})`
+                : isHost ? `🚀 开始游戏 (${count}/${MAX_PLAYERS})` : '等待房主开始游戏';
+            document.getElementById('waiting-note').textContent = roomStarted
+                ? '本局结束后，请刷新页面创建新房间。'
+                : isHost
+                ? `分享房间码，至少 ${MIN_PLAYERS} 位玩家加入后即可开始。`
+                : '已加入房间，等待房主开始游戏...';
+        }
+
+        function setRoomError(message) {
+            document.getElementById('room-entry-error').textContent = message;
+            document.getElementById('room-waiting-error').textContent = message;
+        }
+
+        function sendRoomMessage(message) {
+            if (!roomConnection || roomConnection.readyState !== WebSocket.OPEN) {
+                setRoomError('房间服务未连接，请稍后重试。');
+                return;
+            }
+            roomConnection.send(JSON.stringify(message));
+        }
+
+        function getPlayerName() {
+            const input = document.getElementById('player-name-input');
+            const name = input.value.trim();
+            if (!name) {
+                setRoomError('请输入昵称。');
+                input.focus();
+                return null;
+            }
+            return name;
+        }
+
+        function createRoom() {
+            const name = getPlayerName();
+            if (name) {
+                setRoomError('');
+                sendRoomMessage({ type: 'create-room', name });
+            }
+        }
+
+        function joinRoom() {
+            const name = getPlayerName();
+            const codeInput = document.getElementById('room-code-input');
+            const code = codeInput.value.trim().toUpperCase();
+            if (!name) return;
+            if (!/^[A-Z0-9]{6}$/.test(code)) {
+                setRoomError('请输入有效的 6 位房间码。');
+                codeInput.focus();
+                return;
+            }
+            setRoomError('');
+            sendRoomMessage({ type: 'join-room', name, code });
+        }
+
+        function handleRoomMessage(message) {
+            if (message.type === 'connected') {
+                playerId = message.playerId;
+                document.getElementById('current-user-tag').textContent = '房间服务已连接';
+            } else if (message.type === 'room-state') {
+                const previousRoomCode = roomCode;
+                const previousPlayers = gameState.players;
+                roomCode = message.room.code;
+                isHost = message.room.hostId === playerId;
+                gameState.players = message.room.players.map(player => ({
+                    id: player.id,
+                    name: player.name,
+                    role: 'unassigned',
+                    isAlive: true,
+                    isMe: player.id === playerId
+                }));
+                gameState.myId = playerId;
+                if (!previousRoomCode) {
+                    addLog(`已加入房间 ${roomCode}。`);
+                } else {
+                    const joinedPlayer = gameState.players.find(player =>
+                        !previousPlayers.some(previous => previous.id === player.id)
+                    );
+                    const leftPlayer = previousPlayers.find(player =>
+                        !gameState.players.some(current => current.id === player.id)
+                    );
+                    if (joinedPlayer) addLog(`${joinedPlayer.name} 加入了房间。`);
+                    if (leftPlayer) addLog(`${leftPlayer.name} 离开了房间。`);
+                }
+                render();
+            } else if (message.type === 'game-started') {
+                roomStarted = true;
+                gameState.players = message.players.map(player => ({
+                    ...player,
+                    isMe: player.id === playerId
+                }));
+                gameState.phase = 'NIGHT_WEREWOLF';
+                addLog('房主已开始游戏！天黑请闭眼，所有玩家已隐藏身份。');
+                addLog('【夜晚阶段】狼人请睁眼，选择今晚要袭击的目标。');
+                render();
+            } else if (message.type === 'error') {
+                setRoomError(message.message);
+            }
+        }
+
+        function connectToRoomService() {
+            if (window.location.protocol === 'file:') {
+                document.getElementById('current-user-tag').textContent = '请启动房间服务';
+                setRoomError('请先运行 npm start，再通过 http://localhost:3000 打开游戏。');
+                return;
+            }
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            roomConnection = new WebSocket(`${protocol}//${window.location.host}`);
+            roomConnection.addEventListener('open', () => {
+                document.getElementById('current-user-tag').textContent = '房间服务已连接';
+            });
+            roomConnection.addEventListener('message', event => {
+                let message;
+                try {
+                    message = JSON.parse(event.data);
+                } catch (error) {
+                    console.error('Unable to parse room service message.', error);
+                    setRoomError('收到无法处理的房间服务消息，请刷新页面重试。');
+                    return;
+                }
+                handleRoomMessage(message);
+            });
+            roomConnection.addEventListener('close', () => {
+                document.getElementById('current-user-tag').textContent = '房间服务已断开';
+                if (!roomCode) {
+                    setRoomError('无法连接房间服务，请确认服务已启动后刷新页面。');
+                } else {
+                    document.getElementById('waiting-note').textContent = '与房间服务断开，请刷新页面重新加入。';
+                }
+            });
+            roomConnection.addEventListener('error', () => {
+                document.getElementById('current-user-tag').textContent = '房间服务连接失败';
+            });
+        }
+
+        async function copyRoomCode() {
+            try {
+                await navigator.clipboard.writeText(roomCode);
+                document.getElementById('waiting-note').textContent = '房间码已复制，可以分享给好友。';
+            } catch (error) {
+                console.error('Unable to copy room code.', error);
+                document.getElementById('waiting-note').textContent = '复制失败，请手动选择房间码。';
+            }
+        }
+
+        // The current game rules are still simulated in each browser; the server synchronizes the room and start event.
+        function startGame() {
+            if (isHost) sendRoomMessage({ type: 'start-game' });
         }
 
         function addLog(text) {
@@ -336,22 +586,6 @@
             item.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
             logs.appendChild(item);
             logs.scrollTop = logs.scrollHeight;
-        }
-
-        // 开始游戏与发牌逻辑
-        function startGame() {
-            const rolesPool = ['werewolf', 'seer', 'witch', 'villager'];
-            // 随机分配
-            gameState.players.forEach((p, idx) => {
-                p.role = rolesPool[idx % rolesPool.length];
-                p.isAlive = true;
-            });
-
-            gameState.phase = 'NIGHT_WEREWOLF';
-            document.getElementById('room-status-badge').textContent = '夜晚行动中';
-            addLog('游戏正式开始！天黑请闭眼，所有玩家已隐藏身份。');
-            addLog('【夜晚阶段】狼人请睁眼，选择今晚要袭击的目标。');
-            render();
         }
 
         // 更新阶段对应文案与互动按钮
@@ -444,16 +678,14 @@
             }
         }
 
-        // 初始化执行
         render();
-
-        // 尝试对接 Discord SDK (本地调试未在 Discord 中时会自动降级捕获异常)
-        try {
-            // const discordSdk = new DiscordSDK(ENV.CLIENT_ID);
-            document.getElementById('current-user-tag').textContent = 'Discord 环境就绪 (模拟玩家: Alex)';
-        } catch (e) {
-            document.getElementById('current-user-tag').textContent = '独立浏览器运行模式';
-        }
+        document.getElementById('create-room-button').addEventListener('click', createRoom);
+        document.getElementById('join-room-button').addEventListener('click', joinRoom);
+        document.getElementById('copy-room-code-button').addEventListener('click', copyRoomCode);
+        document.getElementById('room-code-input').addEventListener('input', event => {
+            event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+        });
+        connectToRoomService();
     </script>
 </body>
 </html>
