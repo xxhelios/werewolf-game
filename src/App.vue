@@ -166,17 +166,17 @@ const phaseDescription = computed(() => {
     if (phase.value === 'NIGHT_WEREWOLF') {
         return currentPlayer.value?.role === 'werewolf'
             ? '狼人选择今晚的袭击目标，确认后点击“准备就绪”。'
-            : '狼人正在行动，请等待本阶段结束。';
+            : '狼人行动中，请等待狼人完成行动。';
     }
     if (phase.value === 'NIGHT_WITCH') {
         return currentPlayer.value?.role === 'witch'
             ? '可使用解药救人、使用毒药选择一人，或不使用药剂直接准备。'
-            : '女巫正在行动，请等待本阶段结束。';
+            : '女巫行动中，请等待女巫完成行动。';
     }
     if (phase.value === 'NIGHT_SEER') {
         return currentPlayer.value?.role === 'seer'
             ? '选择一位玩家查验身份，确认后点击“准备就绪”。'
-            : '预言家正在查验，请等待本阶段结束。';
+            : '预言家查验中，请等待预言家完成行动。';
     }
     if (phase.value === 'DAY_VOTE') return '请完成讨论并投票，然后点击“准备就绪”。投票内容不会公开。';
     return '本局游戏已结束。';
@@ -193,9 +193,23 @@ const connectedPlayerCount = computed(() => players.value.filter(player =>
 ).length);
 const wolfTargetName = computed(() => players.value.find(player => player.id === wolfTargetId.value)?.name ?? '无');
 const readyButtonLabel = computed(() => currentPlayer.value?.isReady ? '取消准备' : '准备就绪');
+const canConfirmPhase = computed(() => {
+    const player = currentPlayer.value;
+    if (!player?.isAlive) return false;
+    if (phase.value === 'NIGHT_WEREWOLF') return player.role === 'werewolf';
+    if (phase.value === 'NIGHT_WITCH') return player.role === 'witch';
+    if (phase.value === 'NIGHT_SEER') return player.role === 'seer';
+    return phase.value === 'ROLE_REVEAL' || phase.value === 'DAY_VOTE';
+});
+const phaseStatusMessages: Partial<Record<GamePhase, string>> = {
+    NIGHT_WEREWOLF: '狼人行动中',
+    NIGHT_WITCH: '女巫行动中',
+    NIGHT_SEER: '预言家行动中'
+};
+const phaseStatusMessage = computed(() => phaseStatusMessages[phase.value] ?? '');
 const canReady = computed(() => {
     const player = currentPlayer.value;
-    if (!player?.isAlive || countdownSeconds.value !== null || connectionState.value !== 'connected') {
+    if (!player?.isAlive || !canConfirmPhase.value || countdownSeconds.value !== null || connectionState.value !== 'connected') {
         return false;
     }
     if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !selectedWolfTargetId.value) {
@@ -475,7 +489,9 @@ function handleRoomMessage(message: ServerMessage): void {
         countdownSeconds.value = message.countdownSeconds;
         players.value = message.players.map(player => ({
             ...player,
-            role: player.id === playerId.value ? message.role ?? 'unassigned' : 'unassigned',
+            role: message.phase === 'GAME_OVER'
+                ? player.role
+                : player.id === playerId.value ? message.role ?? 'unassigned' : 'unassigned',
             isMe: player.id === playerId.value
         }));
         wolfTargetId.value = message.wolfTargetId;
@@ -814,14 +830,18 @@ onUnmounted(() => {
                         <Message v-if="countdownSeconds !== null" severity="info" :closable="false" class="countdown-message">
                             {{ countdownSeconds }} 秒后进入下一阶段
                         </Message>
+                        <div v-else-if="!canConfirmPhase && phaseStatusMessage" class="ready-check phase-status">
+                            {{ phaseStatusMessage }}
+                        </div>
                         <div v-else-if="phase === 'DAY_VOTE'" class="ready-check">
                             已准备 {{ readyPlayerCount }} / {{ connectedPlayerCount }} 位在线玩家
                         </div>
-                        <div v-if="phase !== 'GAME_OVER'" class="action-row">
+                        <div v-if="phase !== 'GAME_OVER' && canConfirmPhase" class="action-row">
                             <Button
                                 :label="readyButtonLabel"
                                 :icon="currentPlayer?.isReady ? 'pi pi-times' : 'pi pi-check'"
                                 :severity="currentPlayer?.isReady ? 'secondary' : 'success'"
+                                :class="{ 'ready-selected': currentPlayer?.isReady }"
                                 :disabled="countdownSeconds !== null || (!canReady && !currentPlayer?.isReady)"
                                 @click="toggleReady"
                             />
@@ -859,6 +879,12 @@ onUnmounted(() => {
                                 <span class="player-identity">
                                     <span class="player-name">{{ player.name }}</span>
                                     <Tag v-if="player.id === hostId" value="房主" severity="warn" class="host-tag" />
+                                    <Tag
+                                        v-if="phase === 'GAME_OVER'"
+                                        :value="player.role === 'unassigned' ? '身份未知' : roleInfo[player.role].name"
+                                        severity="info"
+                                        class="role-tag"
+                                    />
                                     <Tag
                                         v-if="phase === 'DAY_VOTE' && player.isAlive"
                                         :value="player.isReady ? '已准备' : '未准备'"
@@ -1213,6 +1239,27 @@ button, input {
 .ready-tag {
     flex-shrink: 0;
     font-size: 0.7rem;
+}
+
+.role-tag {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+}
+
+.phase-status {
+    color: var(--p-primary-200);
+    font-weight: 700;
+}
+
+.ready-selected,
+.ready-selected:hover {
+    border-color: #14532d !important;
+    background: #14532d !important;
+    color: #dcfce7 !important;
+}
+
+.ready-selected:enabled:active {
+    background: #052e16 !important;
 }
 
 .player-item.is-dead {

@@ -19,6 +19,19 @@ function send(client, message) {
     }
 }
 
+function phaseParticipants(room) {
+    const livingOnlinePlayers = connectedPlayers(room);
+    const actingRole = {
+        NIGHT_WEREWOLF: 'werewolf',
+        NIGHT_WITCH: 'witch',
+        NIGHT_SEER: 'seer'
+    }[room.phase];
+    if (!actingRole) return livingOnlinePlayers;
+    return livingOnlinePlayers.filter(player =>
+        room.gamePlayers.find(candidate => candidate.id === player.id)?.role === actingRole
+    );
+}
+
 function sendError(client, message) {
     send(client, { type: 'error', message });
 }
@@ -81,7 +94,7 @@ function gameProgressFor(room, client) {
         return {
             id: player.id,
             name: player.name,
-            role: 'unassigned',
+            role: room.phase === 'GAME_OVER' ? player.role : 'unassigned',
             isAlive: player.isAlive,
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
             isReady: room.phase === 'DAY_VOTE' && room.readyPlayerIds.has(player.id)
@@ -124,9 +137,7 @@ function clearReadyCountdown(room) {
 
 function phaseActionsComplete(room) {
     if (room.phase === 'NIGHT_WEREWOLF') {
-        return connectedPlayers(room)
-            .filter(player => room.gamePlayers.find(candidate => candidate.id === player.id)?.role === 'werewolf')
-            .every(player => room.wolfTargets.has(player.id));
+        return phaseParticipants(room).every(player => room.wolfTargets.has(player.id));
     }
     if (room.phase === 'DAY_VOTE') {
         return connectedPlayers(room).every(player => room.votes.has(player.id));
@@ -260,13 +271,19 @@ function advanceGamePhase(room) {
             NIGHT_WEREWOLF: '夜幕降临，进入狼人行动阶段。'
         })[room.phase] || '游戏阶段已更新。'
     });
+    startReadyCountdown(room);
 }
 
 function startReadyCountdown(room) {
     if (room.countdownTimer || room.phase === 'GAME_OVER') return;
     if (!phaseActionsComplete(room)) return;
-    const activePlayers = connectedPlayers(room);
-    if (activePlayers.length === 0 || activePlayers.some(player =>
+    const activePlayers = phaseParticipants(room);
+    if (activePlayers.length === 0) {
+        if (connectedPlayers(room).length === 0) return;
+        advanceGamePhase(room);
+        return;
+    }
+    if (activePlayers.some(player =>
         !room.readyPlayerIds.has(player.id)
     )) return;
 
@@ -287,13 +304,17 @@ function startReadyCountdown(room) {
 }
 
 function updateReadiness(room, client, isReady) {
+    const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
+    if (isReady && !phaseParticipants(room).some(player => player.id === client.id)) {
+        sendError(client, '当前阶段无需由你确认准备。');
+        return;
+    }
     if (isReady) {
         room.readyPlayerIds.add(client.id);
     } else {
         room.readyPlayerIds.delete(client.id);
         clearReadyCountdown(room);
     }
-    const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
     if (gamePlayer) gamePlayer.isReady = isReady;
     broadcastGameProgress(room);
     startReadyCountdown(room);
@@ -448,6 +469,10 @@ function handleMessage(client, message) {
         const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
         if (!gamePlayer?.isAlive) {
             sendError(client, '淘汰玩家不能提交准备状态。');
+            return;
+        }
+        if (message.isReady && !phaseParticipants(room).some(player => player.id === client.id)) {
+            sendError(client, '当前阶段无需由你确认准备。');
             return;
         }
         if (
