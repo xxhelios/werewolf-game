@@ -93,6 +93,7 @@ const roleInfo: Record<Role, { name: string; tip: string }> = {
 };
 
 const playerName = ref('Player');
+const createRoomCodeInput = ref('');
 const renameName = ref('');
 const roomCodeInput = ref('');
 const roomCode = ref<string | null>(null);
@@ -419,8 +420,13 @@ function validatedPlayerName(): string | null {
 function createRoom(): void {
     const name = validatedPlayerName();
     if (!name) return;
+    const code = createRoomCodeInput.value.trim().toUpperCase();
+    if (code && !ROOM_CODE_PATTERN.test(code)) {
+        setRoomError('自定义房间码需为 6 位字母或数字；留空则自动生成。');
+        return;
+    }
     setRoomError('');
-    sendRoomMessage({ type: 'create-room', name });
+    sendRoomMessage({ type: 'create-room', name, code });
 }
 
 function joinRoom(): void {
@@ -640,6 +646,9 @@ function toggleReady(): void {
 watch(roomCodeInput, value => {
     roomCodeInput.value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
 });
+watch(createRoomCodeInput, value => {
+    createRoomCodeInput.value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+});
 
 onMounted(() => {
     if (window.location.protocol === 'file:') {
@@ -669,7 +678,8 @@ onUnmounted(() => {
     <div class="app-shell">
         <header class="topbar">
             <div class="brand">
-                <h1>🐺 空间狼人杀</h1>
+                <h1>🐺 宇宙狼人杀</h1>
+                <Tag v-if="roomCode" :value="`房间号 ${roomCode}`" severity="info" />
                 <Tag :value="roomStatus" :severity="roomCode ? 'info' : 'secondary'" />
             </div>
             <Tag :value="connectionLabel[connectionState]" :severity="connectionSeverity" />
@@ -690,6 +700,17 @@ onUnmounted(() => {
                                     maxlength="24"
                                     placeholder="输入昵称"
                                     class="full-width"
+                                    @keyup.enter="createRoom"
+                                />
+                            </div>
+                            <div class="name-field">
+                                <label class="field-label" for="create-room-code">自定义房间码（可选）</label>
+                                <InputText
+                                    id="create-room-code"
+                                    v-model="createRoomCodeInput"
+                                    maxlength="6"
+                                    placeholder="留空则自动生成"
+                                    class="full-width room-code-input"
                                     @keyup.enter="createRoom"
                                 />
                             </div>
@@ -1015,6 +1036,10 @@ button, input {
 
 .full-width {
     width: 100%;
+}
+
+.room-code-input {
+    text-transform: uppercase;
 }
 
 .form-divider {

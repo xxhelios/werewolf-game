@@ -7,7 +7,6 @@ const { WebSocket, WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 8;
-const RECONNECT_GRACE_PERIOD_MS = 5 * 60 * 1000;
 const READY_COUNTDOWN_SECONDS = 5;
 const CODE_CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const rooms = new Map();
@@ -36,14 +35,25 @@ function sendError(client, message) {
     send(client, { type: 'error', message });
 }
 
-function createRoomCode() {
+function createRoomCode(requestedCode = '') {
+    if (requestedCode) {
+        const code = requestedCode.trim().toUpperCase();
+        if (!/^[A-Z0-9]{6}$/.test(code)) {
+            return { error: '自定义房间码必须是 6 位字母或数字。' };
+        }
+        if (rooms.has(code)) {
+            return { error: '这个房间码已被使用，请换一个。' };
+        }
+        return { code };
+    }
+
     let code;
     do {
         code = Array.from({ length: 6 }, () =>
             CODE_CHARACTERS[crypto.randomInt(CODE_CHARACTERS.length)]
         ).join('');
     } while (rooms.has(code));
-    return code;
+    return { code };
 }
 
 function getPlayerName(value) {
@@ -362,7 +372,16 @@ function handleMessage(client, message) {
             sendError(client, '昵称需为 1-24 个字符。');
             return;
         }
-        const code = createRoomCode();
+        if (message.code !== undefined && typeof message.code !== 'string') {
+            sendError(client, '自定义房间码无效。');
+            return;
+        }
+        const result = createRoomCode(message.code ?? '');
+        if (result.error) {
+            sendError(client, result.error);
+            return;
+        }
+        const { code } = result;
         const room = { code, hostId: client.id, players: [], started: false, gamePlayers: null };
         rooms.set(code, room);
         enterRoom(client, name, room);
@@ -650,40 +669,6 @@ function handleMessage(client, message) {
     sendError(client, '不支持的请求类型。');
 }
 
-function leaveRoom(client) {
-    const room = roomFor(client);
-    if (!room) return;
-
-    const leavingName = client.name;
-    if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
-    client.reconnectTimer = null;
-    if (room.started) {
-        clearReadyCountdown(room);
-        room.readyPlayerIds.delete(client.id);
-        room.wolfTargets.delete(client.id);
-        room.votes.delete(client.id);
-    }
-    room.players = room.players.filter(player => player.id !== client.id);
-    client.roomCode = null;
-    if (room.players.length === 0) {
-        rooms.delete(room.code);
-        return;
-    }
-    if (room.hostId === client.id) {
-        room.hostId = room.players[0].id;
-    }
-    if (!room.started) broadcastRoomState(room);
-    else {
-        room.gamePlayers = room.gamePlayers.filter(player => player.id !== client.id);
-        broadcastGameProgress(room);
-        startReadyCountdown(room);
-    }
-    broadcastRoomEvent(room, {
-        playerId: client.id,
-        text: `${leavingName} 离开了房间。`
-    });
-}
-
 function playerInRoom(playerId) {
     for (const room of rooms.values()) {
         const player = room.players.find(candidate => candidate.id === playerId);
@@ -764,18 +749,16 @@ webSocketServer.on('connection', (socket, request) => {
         id: isValidPlayerId ? requestedPlayerId : crypto.randomUUID(),
         name: null,
         roomCode: null,
-        socket: null,
-        reconnectTimer: null
+        socket: null
     };
 
-    if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
-    client.reconnectTimer = null;
     const previousSocket = client.socket;
     client.socket = socket;
     if (previousSocket && previousSocket !== socket) previousSocket.close();
 
     send(client, { type: 'connected', playerId: client.id });
     if (existingPlayer) {
+        broadcastRoomState(existingPlayer.room);
         if (existingPlayer.room.started) {
             const gamePlayer = existingPlayer.room.gamePlayers?.find(player => player.id === client.id);
             if (gamePlayer) {
@@ -801,8 +784,6 @@ webSocketServer.on('connection', (socket, request) => {
                 }))
             });
             broadcastGameProgress(existingPlayer.room);
-        } else {
-            broadcastRoomState(existingPlayer.room);
         }
         broadcastRoomEvent(existingPlayer.room, {
             playerId: client.id,
@@ -850,8 +831,6 @@ webSocketServer.on('connection', (socket, request) => {
             text: `${client.name} 暂时离线。`
         });
 
-        client.reconnectTimer = setTimeout(() => leaveRoom(client), RECONNECT_GRACE_PERIOD_MS);
-        client.reconnectTimer.unref();
     });
     socket.on('error', error => {
         console.error(`WebSocket error for player ${client.id}:`, error);
