@@ -6,7 +6,7 @@ const { WebSocket, WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT) || 3000;
 const MIN_PLAYERS = 4;
-const MAX_PLAYERS = 8;
+const MAX_PLAYERS = 12;
 const READY_COUNTDOWN_SECONDS = 5;
 const HIDDEN_ACTION_DELAY_MIN_SECONDS = 5;
 const HIDDEN_ACTION_DELAY_MAX_SECONDS = 10;
@@ -29,6 +29,11 @@ function phaseParticipants(room) {
         return room.players.filter(player =>
             room.nightEliminatedPlayerIds.includes(player.id)
             && player.socket?.readyState === WebSocket.OPEN
+        );
+    }
+    if (room.phase === 'DAY_VOTE') {
+        return livingOnlinePlayers.filter(player =>
+            !room.gamePlayers.find(candidate => candidate.id === player.id)?.isSilenced
         );
     }
     const actingRole = {
@@ -137,6 +142,7 @@ function gameProgressFor(room, client, isSpectator = false) {
                 : 'unassigned',
             isAlive: player.isAlive,
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
+            isSilenced: player.isSilenced,
             isReady: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(room.phase)
                 && room.readyPlayerIds.has(player.id)
         };
@@ -210,7 +216,7 @@ function phaseActionsComplete(room) {
         return Boolean(unanimousWolfTarget(room));
     }
     if (room.phase === 'DAY_VOTE') {
-        return connectedPlayers(room).every(player => room.votes.has(player.id));
+        return phaseParticipants(room).every(player => room.votes.has(player.id));
     }
     if (room.phase === 'DAY_VOTE_RESULT') return !room.hunterShotPending;
     if (room.phase === 'GAME_OVER') return false;
@@ -256,7 +262,7 @@ function resolveRound(room) {
     const eliminatedIds = new Set(room.nightEliminatedPlayerIds);
     const voteCandidates = room.gamePlayers.filter(player => player.isAlive);
     const votersByTarget = new Map();
-    connectedPlayers(room)
+    phaseParticipants(room)
         .forEach(player => {
             const targetId = room.votes.get(player.id);
             if (targetId) {
@@ -271,7 +277,8 @@ function resolveRound(room) {
         voterIds: votersByTarget.get(player.id) || [],
         votes: votersByTarget.get(player.id)?.length || 0,
         eliminated: false,
-        hunterShot: false
+        hunterShot: false,
+        idiotSaved: false
     }));
     const voteCounts = new Map(
         room.voteResults.map(result => [result.targetId, result.votes])
@@ -282,6 +289,15 @@ function resolveRound(room) {
     if (voteWinners.length === 1 && highestVoteCount > 0) {
         voteEliminatedIds.add(voteWinners[0][0]);
         eliminatedIds.add(voteWinners[0][0]);
+    }
+    const votedOutPlayer = room.gamePlayers.find(player => voteEliminatedIds.has(player.id));
+    const idiotUsedImmunity = votedOutPlayer?.role === 'idiot' && !votedOutPlayer.isSilenced;
+    if (idiotUsedImmunity) {
+        votedOutPlayer.isSilenced = true;
+        voteEliminatedIds.delete(votedOutPlayer.id);
+        eliminatedIds.delete(votedOutPlayer.id);
+        const voteResult = room.voteResults.find(result => result.targetId === votedOutPlayer.id);
+        if (voteResult) voteResult.idiotSaved = true;
     }
     room.voteResults.forEach(result => {
         result.eliminated = voteEliminatedIds.has(result.targetId);
@@ -325,6 +341,12 @@ function resolveRound(room) {
         ? `投票结果公示：${voteSummary}。投票淘汰：${voteEliminatedNames.join('、')}。`
         : `投票结果公示：${voteSummary || '无人得票'}。投票平票或无人得票，本轮无人因投票淘汰。`;
     broadcastRoomEvent(room, { playerId: null, text: result });
+    if (idiotUsedImmunity) {
+        broadcastRoomEvent(room, {
+            playerId: null,
+            text: `${votedOutPlayer.name} 使用免死金牌，继续存活，但永久失去发言和投票权。`
+        });
+    }
     if (room.hunterShotPending) {
         broadcastRoomEvent(room, {
             playerId: null,
@@ -542,6 +564,10 @@ function leaveRoom(client) {
         sendError(client, '你不在房间中。');
         return;
     }
+    if (room.gamePlayers?.find(player => player.id === client.id)?.isSilenced) {
+        sendError(client, '你已失去发言权。');
+        return;
+    }
 
     clearReadyCountdown(room);
     room.readyPlayerIds?.delete(client.id);
@@ -586,14 +612,16 @@ function leaveRoom(client) {
 }
 
 function shuffledRoles(playerCount) {
-    const wolfCount = playerCount === 8 ? 3 : playerCount >= 6 ? 2 : 1;
+    const wolfCount = playerCount >= 12 ? 4 : playerCount >= 8 ? 3 : playerCount >= 6 ? 2 : 1;
     const hasHunter = playerCount >= 7;
+    const hasIdiot = playerCount >= 10;
     const roles = [
         ...Array(wolfCount).fill('werewolf'),
         'seer',
         'witch',
         ...(hasHunter ? ['hunter'] : []),
-        ...Array(playerCount - wolfCount - 2 - Number(hasHunter)).fill('villager')
+        ...(hasIdiot ? ['idiot'] : []),
+        ...Array(playerCount - wolfCount - 2 - Number(hasHunter) - Number(hasIdiot)).fill('villager')
     ];
     for (let i = roles.length - 1; i > 0; i -= 1) {
         const j = crypto.randomInt(i + 1);
@@ -608,6 +636,7 @@ function roleCountsFor(roles) {
         seer: 0,
         witch: 0,
         hunter: 0,
+        idiot: 0,
         villager: 0
     };
     roles.forEach(role => {
@@ -644,6 +673,7 @@ function beginGame(room, initiator) {
         name: player.name,
         role: roles[index],
         isAlive: true,
+        isSilenced: false,
         isReady: false,
         isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
     }));
@@ -850,6 +880,10 @@ function handleMessage(client, message) {
             sendError(client, '淘汰玩家不能提交准备状态。');
             return;
         }
+        if (message.isReady && room.phase === 'DAY_VOTE' && gamePlayer.isSilenced) {
+            sendError(client, '你已失去投票权。');
+            return;
+        }
         if (message.isReady && !phaseParticipants(room).some(player => player.id === client.id)) {
             sendError(client, '当前阶段无需由你确认准备。');
             return;
@@ -1014,7 +1048,12 @@ function handleMessage(client, message) {
             room.seerTargetId = targetId;
             room.seerResult = room.gamePlayers.find(player => player.id === targetId)?.role ?? null;
         } else if (action === 'vote') {
-            if (room.phase !== 'DAY_VOTE' || !validLivingTarget(room, targetId) || targetId === client.id) {
+            if (room.phase !== 'DAY_VOTE' || gamePlayer.isSilenced
+                || !validLivingTarget(room, targetId) || targetId === client.id) {
+                if (room.phase === 'DAY_VOTE' && gamePlayer.isSilenced) {
+                    sendError(client, '你已失去投票权。');
+                    return;
+                }
                 sendError(client, '投票目标无效。');
                 return;
             }

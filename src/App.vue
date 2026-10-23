@@ -24,6 +24,7 @@ interface GamePlayer {
     role: Role | 'unassigned';
     isAlive: boolean;
     isConnected: boolean;
+    isSilenced: boolean;
     isReady: boolean;
 }
 
@@ -69,7 +70,7 @@ type ServerMessage =
     | { type: 'error'; message: string };
 
 const MIN_PLAYERS = 4;
-const MAX_PLAYERS = 8;
+const MAX_PLAYERS = 12;
 const MAX_MEMO_ENTRIES = 200;
 const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
 const PLAYER_ID_STORAGE_KEY = 'werewolf-player-id';
@@ -191,6 +192,9 @@ const phaseDescription = computed(() => {
         return '你昨夜被淘汰。请先完成发言，之后点击“入土为安”进入讨论与投票。';
     }
     if (currentPlayer.value && !currentPlayer.value.isAlive) return '你已被淘汰，请等待本局游戏结束。';
+    if (phase.value === 'DAY_VOTE' && currentPlayer.value?.isSilenced) {
+        return '你已使用免死金牌，继续存活；此后永久失去发言和投票权。';
+    }
     if (phase.value === 'ROLE_REVEAL') return '请查看你的角色信息，确认后点击“准备就绪”。';
     if (phase.value === 'DAY_DEATH_SPEECH') return '昨夜淘汰的玩家正在发言，请稍候。';
     if (phase.value === 'NIGHT_WEREWOLF') {
@@ -216,7 +220,9 @@ const canStartGame = computed(() =>
     isHost.value && !roomStarted.value && players.value.length >= MIN_PLAYERS
 );
 const phaseReadyPlayers = computed(() => players.value.filter(player =>
-    player.isConnected && (phase.value === 'DAY_VOTE_RESULT' || player.isAlive)
+    player.isConnected
+    && (phase.value === 'DAY_VOTE_RESULT'
+        || (player.isAlive && (phase.value !== 'DAY_VOTE' || !player.isSilenced)))
 ));
 const readyPlayerCount = computed(() => phaseReadyPlayers.value.filter(player => player.isReady).length);
 const connectedPlayerCount = computed(() => phaseReadyPlayers.value.length);
@@ -253,6 +259,7 @@ const canConfirmPhase = computed(() => {
         && nightEliminatedPlayerIds.value.includes(player.id)
     ) return true;
     if (!player?.isAlive) return false;
+    if (phase.value === 'DAY_VOTE' && player.isSilenced) return false;
     if (phase.value === 'NIGHT_WEREWOLF') return player.role === 'werewolf';
     if (phase.value === 'NIGHT_WITCH') return player.role === 'witch';
     if (phase.value === 'NIGHT_SEER') return player.role === 'seer';
@@ -319,6 +326,7 @@ function isRole(value: unknown): value is Role {
         || value === 'seer'
         || value === 'witch'
         || value === 'hunter'
+        || value === 'idiot'
         || value === 'villager';
 }
 
@@ -348,6 +356,7 @@ function isVoteResultList(value: unknown): value is VoteResult[] {
         && result.voterIds.every(id => typeof id === 'string')
         && typeof result.eliminated === 'boolean'
         && typeof result.hunterShot === 'boolean'
+        && typeof result.idiotSaved === 'boolean'
     );
 }
 
@@ -369,6 +378,7 @@ function isGamePlayerList(value: unknown): value is GamePlayer[] {
         && (player.role === 'unassigned' || isRole(player.role))
         && typeof player.isAlive === 'boolean'
         && typeof player.isConnected === 'boolean'
+        && typeof player.isSilenced === 'boolean'
         && typeof player.isReady === 'boolean'
     );
 }
@@ -636,6 +646,7 @@ function handleRoomMessage(message: ServerMessage): void {
             ...player,
             role: 'unassigned',
             isAlive: true,
+            isSilenced: false,
             isMe: !isSpectator.value && player.id === playerId.value
         }));
         if (!renameName.value) {
@@ -724,6 +735,7 @@ function updateGamePlayers(
                 && existing.role === role
                 && existing.isAlive === player.isAlive
                 && existing.isConnected === player.isConnected
+                && existing.isSilenced === player.isSilenced
                 && existing.isReady === player.isReady
                 && existing.isMe === (!isSpectator.value && player.id === playerId.value);
         });
@@ -876,7 +888,7 @@ function selectSeerTarget(player: Player): void {
 }
 
 function selectVoteTarget(player: Player): void {
-    if (!canChooseAction.value || phase.value !== 'DAY_VOTE') return;
+    if (!canChooseAction.value || phase.value !== 'DAY_VOTE' || currentPlayer.value?.isSilenced) return;
     selectedVoteTargetId.value = player.id;
     sendRoomMessage({ type: 'game-action', action: 'vote', targetId: player.id });
 }
@@ -945,7 +957,6 @@ onUnmounted(() => {
             :can-leave-room="connectionState === 'connected'"
             @leave-room="leaveRoom"
         />
-
         <main class="game-layout">
             <section class="game-column">
                 <Card v-if="!roomCode" class="game-card room-entry">
@@ -1008,7 +1019,7 @@ onUnmounted(() => {
 
                 <Card v-else-if="phase === 'LOBBY'" class="game-card lobby-card">
                     <template #title>等待玩家加入</template>
-                    <template #subtitle>分享房间码给好友。4-8 位玩家可以开始游戏。</template>
+                    <template #subtitle>分享房间码给好友。4-12 位玩家可以开始游戏。</template>
                     <template #content>
                         <div class="room-code">{{ roomCode }}</div>
                         <div class="rename-form">
@@ -1104,10 +1115,11 @@ onUnmounted(() => {
                                         <small>
                                             投票玩家：{{ voterNames(result) }}
                                         </small>
+                                        <small v-if="result.idiotSaved">免死金牌：继续存活，之后禁言禁票</small>
                                     </div>
                                     <Tag
-                                        :value="`${result.votes} 票${result.eliminated ? ' · 淘汰' : ''}${result.hunterShot ? ' · 猎人带走' : ''}`"
-                                        :severity="result.eliminated || result.hunterShot ? 'danger' : 'info'"
+                                        :value="`${result.votes} 票${result.eliminated ? ' · 淘汰' : ''}${result.hunterShot ? ' · 猎人带走' : ''}${result.idiotSaved ? ' · 免死' : ''}`"
+                                        :severity="result.eliminated || result.hunterShot ? 'danger' : result.idiotSaved ? 'warn' : 'info'"
                                     />
                                 </li>
                             </ul>
@@ -1218,6 +1230,13 @@ onUnmounted(() => {
                                 查验结果：{{ ROLE_INFO[seerResult].name }}
                             </Message>
                         </div>
+                        <Message
+                            v-else-if="phase === 'DAY_VOTE' && currentPlayer?.isAlive && currentPlayer.isSilenced"
+                            severity="warn"
+                            :closable="false"
+                        >
+                            你已使用免死金牌，继续存活；此后永久失去发言和投票权。
+                        </Message>
                         <div v-else-if="phase === 'DAY_VOTE' && currentPlayer?.isAlive" class="action-row">
                             <Button
                                 v-for="player in aliveTargets"

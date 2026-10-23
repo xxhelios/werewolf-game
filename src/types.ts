@@ -1,4 +1,4 @@
-export type Role = 'werewolf' | 'seer' | 'witch' | 'hunter' | 'villager';
+export type Role = 'werewolf' | 'seer' | 'witch' | 'hunter' | 'idiot' | 'villager';
 
 export type GamePhase =
     | 'LOBBY'
@@ -21,6 +21,7 @@ export const ROLE_INFO: Record<Role, { name: string; tip: string }> = {
     seer: { name: '🔮 预言家', tip: '每晚可以查验一名玩家的真实身份。' },
     witch: { name: '🧪 女巫', tip: '拥有一瓶解药和一瓶毒药（整局各一次）。' },
     hunter: { name: '🏹 猎人', tip: '被投票淘汰时，可以开枪带走一名仍存活的玩家，也可以选择不开枪。' },
+    idiot: { name: '💘 恋爱脑', tip: '首次被白天投票淘汰时自动使用免死金牌；此后永久失去发言和投票权。' },
     villager: { name: '🧑 平民', tip: '认真听取发言，通过投票找出狼人。' }
 };
 
@@ -29,6 +30,7 @@ export interface Player {
     name: string;
     role: Role | 'unassigned';
     isAlive: boolean;
+    isSilenced: boolean;
     isConnected: boolean;
     isReady: boolean;
     isMe: boolean;
@@ -46,6 +48,7 @@ export interface VoteResult {
     voterIds: string[];
     eliminated: boolean;
     hunterShot: boolean;
+    idiotSaved: boolean;
 }
 
 export interface MemoEntry {

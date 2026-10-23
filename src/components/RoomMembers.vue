@@ -38,6 +38,12 @@ defineProps<{
                             class="role-tag"
                         />
                         <Tag
+                            v-if="player.isSilenced"
+                            value="禁言·禁票"
+                            severity="warn"
+                            class="role-tag"
+                        />
+                        <Tag
                             v-if="(
                                 ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(phase)
                                 && (player.isAlive || phase === 'DAY_VOTE_RESULT' || (
