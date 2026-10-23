@@ -30,7 +30,13 @@ defineProps<{
                 >
                     <span class="player-identity">
                         <span class="player-name">{{ player.name }}</span>
-                        <Tag v-if="player.id === hostId" value="房主" severity="warn" class="host-tag" />
+                        <span
+                            v-if="player.id === hostId"
+                            class="host-indicator"
+                            role="img"
+                            aria-label="房主"
+                            title="房主"
+                        />
                         <Tag
                             v-if="showRoles || phase === 'GAME_OVER' || (showWerewolfRoles && player.role === 'werewolf')"
                             :value="player.role === 'unassigned' ? '身份未知' : ROLE_INFO[player.role].name"
@@ -67,3 +73,13 @@ defineProps<{
         </template>
     </Card>
 </template>
+
+<style scoped>
+.host-indicator {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    border-radius: 50%;
+    background: #f97316;
+}
+</style>

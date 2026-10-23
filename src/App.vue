@@ -1470,11 +1470,6 @@ button, input {
     gap: 8px;
 }
 
-.host-tag {
-    flex-shrink: 0;
-    font-size: 0.7rem;
-}
-
 .ready-tag {
     flex-shrink: 0;
     font-size: 0.7rem;
