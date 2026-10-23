@@ -109,14 +109,17 @@ function gameProgressFor(room, client) {
             role: room.phase === 'GAME_OVER' ? player.role : 'unassigned',
             isAlive: player.isAlive,
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
-            isReady: room.phase === 'DAY_VOTE' && room.readyPlayerIds.has(player.id)
+            isReady: ['ROLE_REVEAL', 'DAY_VOTE'].includes(room.phase)
+                && room.readyPlayerIds.has(player.id)
         };
     });
     const message = {
         type: 'game-progress',
         phase: room.phase,
         players: publicPlayers,
-        readyPlayerIds: room.phase === 'DAY_VOTE' ? [...room.readyPlayerIds] : [],
+        readyPlayerIds: ['ROLE_REVEAL', 'DAY_VOTE'].includes(room.phase)
+            ? [...room.readyPlayerIds]
+            : [],
         countdownSeconds: room.countdownSeconds,
         role: gamePlayer?.role ?? null,
         wolfTargetId: gamePlayer?.role === 'witch' && room.phase === 'NIGHT_WITCH'
@@ -127,6 +130,7 @@ function gameProgressFor(room, client) {
             : null,
         seerResult: gamePlayer?.role === 'seer' ? room.seerResult : null,
         eliminatedPlayerIds: room.eliminatedPlayerIds,
+        nightEliminatedPlayerIds: room.nightEliminatedPlayerIds,
         selectedWolfTargetId: gamePlayer?.role === 'werewolf' ? room.wolfTargets.get(client.id) ?? null : null,
         selectedSaveTargetId: gamePlayer?.role === 'witch' ? room.witchSaveTargetId : null,
         selectedPoisonTargetId: gamePlayer?.role === 'witch' ? room.witchPoisonTargetId : null,
@@ -204,22 +208,7 @@ function winnerFor(room) {
 }
 
 function resolveRound(room) {
-    const eliminatedIds = new Set();
-    const wolfCounts = new Map();
-    connectedPlayers(room)
-        .filter(player => room.gamePlayers.find(candidate => candidate.id === player.id)?.role === 'werewolf')
-        .forEach(player => {
-            const targetId = room.wolfTargets.get(player.id);
-            if (targetId) wolfCounts.set(targetId, (wolfCounts.get(targetId) || 0) + 1);
-        });
-    const highestWolfVotes = Math.max(0, ...wolfCounts.values());
-    const wolfWinners = [...wolfCounts.entries()].filter(([, count]) => count === highestWolfVotes);
-    room.wolfTargetId = wolfWinners.length === 1 && highestWolfVotes > 0 ? wolfWinners[0][0] : null;
-
-    if (room.wolfTargetId && room.witchSaveTargetId !== room.wolfTargetId) {
-        eliminatedIds.add(room.wolfTargetId);
-    }
-    if (room.witchPoisonTargetId) eliminatedIds.add(room.witchPoisonTargetId);
+    const eliminatedIds = new Set(room.nightEliminatedPlayerIds);
 
     const voteCounts = new Map();
     connectedPlayers(room)
@@ -230,18 +219,20 @@ function resolveRound(room) {
         });
     const highestVoteCount = Math.max(0, ...voteCounts.values());
     const voteWinners = [...voteCounts.entries()].filter(([, count]) => count === highestVoteCount);
-    if (voteWinners.length === 1 && highestVoteCount > 0) eliminatedIds.add(voteWinners[0][0]);
+    const voteEliminatedIds = new Set();
+    if (voteWinners.length === 1 && highestVoteCount > 0) {
+        voteEliminatedIds.add(voteWinners[0][0]);
+        eliminatedIds.add(voteWinners[0][0]);
+    }
 
     room.eliminatedPlayerIds = [...eliminatedIds];
     room.gamePlayers.forEach(player => {
-        if (eliminatedIds.has(player.id)) player.isAlive = false;
+        if (voteEliminatedIds.has(player.id)) player.isAlive = false;
     });
-    const names = room.gamePlayers
-        .filter(player => eliminatedIds.has(player.id))
+    const voteEliminatedNames = room.gamePlayers
+        .filter(player => voteEliminatedIds.has(player.id))
         .map(player => player.name);
     const winner = winnerFor(room);
-    const usedSavePotion = room.witchSaveTargetId !== null;
-    const usedPoisonPotion = room.witchPoisonTargetId !== null;
     room.phase = winner ? 'GAME_OVER' : 'NIGHT_WEREWOLF';
     clearHiddenActionDelay(room);
     room.readyPlayerIds.clear();
@@ -254,20 +245,52 @@ function resolveRound(room) {
     room.votes.clear();
     room.seerResult = null;
     room.wolfTargetId = null;
-    if (room.phase === 'NIGHT_WEREWOLF') {
-        room.witchPotions.saveUsed = room.witchPotions.saveUsed || usedSavePotion;
-        room.witchPotions.poisonUsed = room.witchPotions.poisonUsed || usedPoisonPotion;
-    }
-    const result = names.length > 0
-        ? `本轮淘汰：${names.join('、')}。`
-        : '本轮无人淘汰。';
+    const result = voteEliminatedNames.length > 0
+        ? `投票淘汰：${voteEliminatedNames.join('、')}。`
+        : '投票无人淘汰。';
     broadcastRoomEvent(room, { playerId: null, text: result });
     if (winner) broadcastRoomEvent(room, { playerId: null, text: `游戏结束：${winner}！` });
     else {
         broadcastRoomEvent(room, { playerId: null, text: '游戏继续，进入下一轮。' });
+        room.nightEliminatedPlayerIds = [];
         if (eliminatedIds.size > 0) startHiddenActionDelay(room);
     }
     broadcastGameProgress(room);
+}
+
+function resolveNight(room) {
+    const wolfCounts = new Map();
+    connectedPlayers(room)
+        .filter(player => room.gamePlayers.find(candidate => candidate.id === player.id)?.role === 'werewolf')
+        .forEach(player => {
+            const targetId = room.wolfTargets.get(player.id);
+            if (targetId) wolfCounts.set(targetId, (wolfCounts.get(targetId) || 0) + 1);
+        });
+    const highestWolfVotes = Math.max(0, ...wolfCounts.values());
+    const wolfWinners = [...wolfCounts.entries()].filter(([, count]) => count === highestWolfVotes);
+    room.wolfTargetId = wolfWinners.length === 1 && highestWolfVotes > 0 ? wolfWinners[0][0] : null;
+
+    const eliminatedIds = new Set();
+    if (room.wolfTargetId && room.witchSaveTargetId !== room.wolfTargetId) {
+        eliminatedIds.add(room.wolfTargetId);
+    }
+    if (room.witchPoisonTargetId) eliminatedIds.add(room.witchPoisonTargetId);
+    room.nightEliminatedPlayerIds = [...eliminatedIds];
+    room.eliminatedPlayerIds = [...eliminatedIds];
+    room.gamePlayers.forEach(player => {
+        if (eliminatedIds.has(player.id)) player.isAlive = false;
+    });
+
+    const names = room.gamePlayers
+        .filter(player => eliminatedIds.has(player.id))
+        .map(player => player.name);
+    broadcastRoomEvent(room, {
+        playerId: null,
+        text: names.length > 0
+            ? `天亮了，昨夜淘汰：${names.join('、')}。`
+            : '天亮了，昨夜无人淘汰。'
+    });
+    return winnerFor(room);
 }
 
 function advanceGamePhase(room) {
@@ -288,7 +311,8 @@ function advanceGamePhase(room) {
         room.witchPotions.saveUsed = room.witchPotions.saveUsed || room.witchSaveTargetId !== null;
         room.witchPotions.poisonUsed = room.witchPotions.poisonUsed || room.witchPoisonTargetId !== null;
     }
-    room.phase = nextPhases[room.phase];
+    const nightWinner = room.phase === 'NIGHT_SEER' ? resolveNight(room) : null;
+    room.phase = nightWinner ? 'GAME_OVER' : nextPhases[room.phase];
     room.readyPlayerIds.clear();
     room.gamePlayers.forEach(player => {
         player.isReady = false;
@@ -298,7 +322,9 @@ function advanceGamePhase(room) {
     broadcastGameProgress(room);
     broadcastRoomEvent(room, {
         playerId: null,
-        text: ({
+        text: nightWinner
+            ? `游戏结束：${nightWinner}！`
+            : ({
             NIGHT_WITCH: '狼人行动结束，进入女巫行动阶段。',
             NIGHT_SEER: '女巫行动结束，进入预言家查验阶段。',
             DAY_VOTE: '夜晚行动结束，进入讨论与投票阶段。',
@@ -395,6 +421,7 @@ function beginGame(room, initiator) {
     room.seerResult = null;
     room.votes = new Map();
     room.eliminatedPlayerIds = [];
+    room.nightEliminatedPlayerIds = [];
     const roles = shuffledRoles(room.players.length);
     room.gamePlayers = room.players.map((player, index) => ({
         id: player.id,
@@ -543,6 +570,10 @@ function handleMessage(client, message) {
         }
         if (typeof message.isReady !== 'boolean') {
             sendError(client, '准备状态无效。');
+            return;
+        }
+        if (room.phase === 'ROLE_REVEAL' && !message.isReady) {
+            sendError(client, '查看身份阶段确认后不能取消准备。');
             return;
         }
         if (room.countdownTimer && message.isReady === false) {

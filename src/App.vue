@@ -64,6 +64,7 @@ type ServerMessage =
         witchPotions: WitchPotions | null;
         seerResult: Role | null;
         eliminatedPlayerIds: string[];
+        nightEliminatedPlayerIds: string[];
         selectedWolfTargetId: string | null;
         selectedSaveTargetId: string | null;
         selectedPoisonTargetId: string | null;
@@ -105,6 +106,7 @@ const roomError = ref('');
 const waitingNote = ref('等待房主开始游戏...');
 const roomStarted = ref(false);
 const countdownSeconds = ref<number | null>(null);
+const nightEliminatedPlayerIds = ref<string[]>([]);
 const wolfTargetId = ref<string | null>(null);
 const selectedWolfTargetId = ref<string | null>(null);
 const selectedSaveTargetId = ref<string | null>(null);
@@ -193,7 +195,10 @@ const connectedPlayerCount = computed(() => players.value.filter(player =>
     player.isConnected && player.isAlive
 ).length);
 const wolfTargetName = computed(() => players.value.find(player => player.id === wolfTargetId.value)?.name ?? '无');
-const readyButtonLabel = computed(() => currentPlayer.value?.isReady ? '取消准备' : '准备就绪');
+const readyButtonLabel = computed(() => {
+    if (phase.value === 'ROLE_REVEAL' && currentPlayer.value?.isReady) return '已准备就绪';
+    return currentPlayer.value?.isReady ? '取消准备' : '准备就绪';
+});
 const canConfirmPhase = computed(() => {
     const player = currentPlayer.value;
     if (!player?.isAlive) return false;
@@ -334,6 +339,8 @@ function parseServerMessage(value: unknown): ServerMessage | null {
         && isNullableRole(value.seerResult)
         && Array.isArray(value.eliminatedPlayerIds)
         && value.eliminatedPlayerIds.every(id => typeof id === 'string')
+        && Array.isArray(value.nightEliminatedPlayerIds)
+        && value.nightEliminatedPlayerIds.every(id => typeof id === 'string')
         && (value.selectedWolfTargetId === null || typeof value.selectedWolfTargetId === 'string')
         && (value.selectedSaveTargetId === null || typeof value.selectedSaveTargetId === 'string')
         && (value.selectedPoisonTargetId === null || typeof value.selectedPoisonTargetId === 'string')
@@ -351,6 +358,7 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             witchPotions: value.witchPotions,
             seerResult: value.seerResult,
             eliminatedPlayerIds: value.eliminatedPlayerIds,
+            nightEliminatedPlayerIds: value.nightEliminatedPlayerIds,
             selectedWolfTargetId: value.selectedWolfTargetId,
             selectedSaveTargetId: value.selectedSaveTargetId,
             selectedPoisonTargetId: value.selectedPoisonTargetId,
@@ -491,8 +499,10 @@ function handleRoomMessage(message: ServerMessage): void {
     if (message.type === 'game-progress') {
         const previousPhase = phase.value;
         roomStarted.value = true;
+        nightEliminatedPlayerIds.value = [];
         phase.value = message.phase;
         countdownSeconds.value = message.countdownSeconds;
+        nightEliminatedPlayerIds.value = message.nightEliminatedPlayerIds;
         players.value = message.players.map(player => ({
             ...player,
             role: message.phase === 'GAME_OVER'
@@ -645,6 +655,7 @@ function selectVoteTarget(player: Player): void {
 
 function toggleReady(): void {
     const player = currentPlayer.value;
+    if (phase.value === 'ROLE_REVEAL' && player?.isReady) return;
     if (!player || (!player.isReady && !canReady.value) || countdownSeconds.value !== null) return;
     sendRoomMessage({ type: 'set-ready', isReady: !player.isReady });
 }
@@ -878,7 +889,9 @@ onUnmounted(() => {
                                 :icon="currentPlayer?.isReady ? 'pi pi-times' : 'pi pi-check'"
                                 :severity="currentPlayer?.isReady ? 'secondary' : 'success'"
                                 :class="{ 'ready-selected': currentPlayer?.isReady }"
-                                :disabled="countdownSeconds !== null || (!canReady && !currentPlayer?.isReady)"
+                                :disabled="countdownSeconds !== null
+                                    || (!canReady && !currentPlayer?.isReady)
+                                    || (phase === 'ROLE_REVEAL' && currentPlayer?.isReady)"
                                 @click="toggleReady"
                             />
                         </div>
@@ -922,14 +935,16 @@ onUnmounted(() => {
                                         class="role-tag"
                                     />
                                     <Tag
-                                        v-if="phase === 'DAY_VOTE' && player.isAlive"
+                                        v-if="['ROLE_REVEAL', 'DAY_VOTE'].includes(phase) && player.isAlive"
                                         :value="player.isReady ? '已准备' : '未准备'"
                                         :severity="player.isReady ? 'success' : 'secondary'"
                                         class="ready-tag"
                                     />
                                 </span>
                                 <Tag
-                                    :value="!player.isAlive ? '淘汰' : !player.isConnected ? '离线' : player.isMe ? '你' : '在线'"
+                                    :value="!player.isAlive
+                                        ? nightEliminatedPlayerIds.includes(player.id) ? '昨夜淘汰' : '淘汰'
+                                        : !player.isConnected ? '离线' : player.isMe ? '你' : '在线'"
                                     :severity="!player.isAlive ? 'danger' : !player.isConnected ? 'secondary' : 'success'"
                                 />
                             </li>
