@@ -21,7 +21,7 @@ defineEmits<{
         <div class="brand">
             <div class="brand-title">
                 <h1>🐺 宇宙狼人杀</h1>
-                <small>版本 {{ appVersion }}</small>
+                <small>version {{ appVersion }}</small>
             </div>
             <Tag v-if="roomCode" :value="`房间号 ${roomCode}`" severity="info" />
             <Button
