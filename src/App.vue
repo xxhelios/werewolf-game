@@ -76,7 +76,24 @@ const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
 const PLAYER_ID_STORAGE_KEY = 'werewolf-player-id';
 const PLAYER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const playerName = ref('Player');
+const FRUIT_NAMES = [
+    '苹果', '香蕉', '橙子', '芒果', '草莓', '蓝莓', '樱桃', '桃子', '梨子', '葡萄',
+    '柠檬', '西瓜', '菠萝', '椰子', '猕猴桃', '石榴', '柚子', '荔枝', '龙眼', '木瓜',
+    '杏子', '李子', '柿子', '枣子', '榴莲', '山竹', '柑橘', '哈密瓜', '百香果', '火龙果',
+    '无花果', '杨梅', '桑葚', '枇杷', '橄榄', '牛油果'
+];
+const ANIMAL_NAMES = [
+    '熊猫', '狐狸', '兔子', '老虎', '狮子', '企鹅', '海豚', '水獭', '松鼠', '猫咪',
+    '小狗', '考拉', '袋鼠', '刺猬', '浣熊', '树懒', '鹿', '河马', '长颈鹿', '斑马',
+    '猫头鹰', '鹦鹉', '海豹', '鲸鱼', '青蛙', '乌龟', '仓鼠', '羊驼', '小熊', '狼崽',
+    '蜜蜂', '蝴蝶', '火烈鸟', '水豚', '猕猴', '小马'
+];
+const randomNameIndex = (length: number): number =>
+    crypto.getRandomValues(new Uint32Array(1))[0] % length;
+const generateDefaultPlayerName = (): string =>
+    `${FRUIT_NAMES[randomNameIndex(FRUIT_NAMES.length)]}${ANIMAL_NAMES[randomNameIndex(ANIMAL_NAMES.length)]}`;
+
+const playerName = ref(generateDefaultPlayerName());
 const createRoomCodeInput = ref('');
 const renameName = ref('');
 const roomCodeInput = ref('');
@@ -970,7 +987,7 @@ onUnmounted(() => {
                                     id="player-name"
                                     v-model="playerName"
                                     maxlength="24"
-                                    placeholder="输入昵称"
+                                    placeholder="已随机生成水果+动物昵称，可自行修改"
                                     class="full-width"
                                     @keyup.enter="createRoom"
                                 />

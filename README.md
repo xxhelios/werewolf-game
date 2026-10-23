@@ -16,6 +16,8 @@ Game actions, vote totals, eliminations, and win conditions are resolved by the 
 
 After a game ends, the room host can restart the game with the same room members. Roles and game progress are reset for the new round.
 
+New players are given a random fruit-and-animal nickname by default. They can edit it before creating or joining a room, or change their name in the lobby.
+
 For players on separate networks, deploy the Node.js server on a host that supports WebSockets and share its public URL.
 
 ## Deploy to GitHub Pages
