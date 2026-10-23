@@ -1106,18 +1106,6 @@ webSocketServer.on('connection', (socket, request) => {
 
         if (room.started) {
             clearReadyCountdown(room);
-            if (room.hunterShotPending && room.hunterId === client.id) {
-                room.hunterShotPending = false;
-                room.roundWinner = winnerFor(room);
-                room.readyPlayerIds.clear();
-                room.gamePlayers.forEach(player => {
-                    player.isReady = false;
-                });
-                broadcastRoomEvent(room, {
-                    playerId: null,
-                    text: '猎人暂时离线，放弃开枪。'
-                });
-            }
             room.readyPlayerIds.delete(client.id);
             const gamePlayer = room.gamePlayers?.find(player => player.id === client.id);
             if (gamePlayer) {

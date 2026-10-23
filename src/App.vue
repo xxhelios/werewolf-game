@@ -99,6 +99,9 @@ const seerResult = ref<Role | null>(null);
 const logs = ref<MemoEntry[]>([{ text: '[系统] 创建房间或输入房间码加入好友的房间。', isOwnAction: false }]);
 
 let roomConnection: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempts = 0;
+let componentUnmounted = false;
 
 const hostId = ref<string | null>(null);
 const isHost = computed(() => Boolean(playerId.value) && hostId.value === playerId.value);
@@ -667,6 +670,7 @@ function updateGamePlayers(
 }
 
 function connectToRoomService(): void {
+    if (componentUnmounted) return;
     const isGitHubPages = window.location.hostname.endsWith('.github.io');
     if (!__WEBSOCKET_URL__ && isGitHubPages) {
         connectionState.value = 'failed';
@@ -682,11 +686,13 @@ function connectToRoomService(): void {
         return;
     }
     websocketUrl.searchParams.set('playerId', playerId.value);
-    roomConnection = new WebSocket(websocketUrl);
-    roomConnection.addEventListener('open', () => {
+    const connection = new WebSocket(websocketUrl);
+    roomConnection = connection;
+    connection.addEventListener('open', () => {
+        reconnectAttempts = 0;
         connectionState.value = 'connected';
     });
-    roomConnection.addEventListener('message', event => {
+    connection.addEventListener('message', event => {
         let parsed: unknown;
         try {
             parsed = JSON.parse(String(event.data));
@@ -702,15 +708,25 @@ function connectToRoomService(): void {
         }
         handleRoomMessage(message);
     });
-    roomConnection.addEventListener('close', () => {
+    connection.addEventListener('close', () => {
+        if (roomConnection !== connection) return;
+        roomConnection = null;
+        if (componentUnmounted) return;
         connectionState.value = 'disconnected';
         if (!roomCode.value) {
-            setRoomError('无法连接房间服务，请确认服务已启动后刷新页面。');
+            setRoomError('无法连接房间服务，正在尝试重新连接。');
         } else {
-            waitingNote.value = '与房间服务断开，请刷新页面重新加入。';
+            waitingNote.value = '连接已断开，正在使用当前玩家身份重新连接并恢复游戏...';
         }
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        const delay = Math.min(1000 * (2 ** reconnectAttempts), 15000);
+        reconnectAttempts += 1;
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectToRoomService();
+        }, delay);
     });
-    roomConnection.addEventListener('error', () => {
+    connection.addEventListener('error', () => {
         connectionState.value = 'failed';
     });
 }
@@ -829,6 +845,8 @@ onMounted(() => {
     connectToRoomService();
 });
 onUnmounted(() => {
+    componentUnmounted = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
     roomConnection?.close();
 });
 </script>
@@ -929,6 +947,9 @@ onUnmounted(() => {
                     <template #content>
                         <Message v-if="roomError" severity="error" :closable="false" class="room-message">
                             {{ roomError }}
+                        </Message>
+                        <Message v-if="connectionState !== 'connected'" severity="warn" :closable="false" class="room-message">
+                            房间连接已断开，正在使用当前玩家 ID 自动重连；游戏进度会在重连后恢复。
                         </Message>
                         <div class="role-card">
                             <span class="eyebrow">你的底牌身份</span>
