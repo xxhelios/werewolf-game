@@ -11,6 +11,7 @@ defineProps<{
     nightEliminatedPlayerIds: string[];
     maxPlayers: number;
     showRoles?: boolean;
+    showWerewolfRoles?: boolean;
 }>();
 
 </script>
@@ -31,7 +32,7 @@ defineProps<{
                         <span class="player-name">{{ player.name }}</span>
                         <Tag v-if="player.id === hostId" value="房主" severity="warn" class="host-tag" />
                         <Tag
-                            v-if="showRoles || phase === 'GAME_OVER'"
+                            v-if="showRoles || phase === 'GAME_OVER' || (showWerewolfRoles && player.role === 'werewolf')"
                             :value="player.role === 'unassigned' ? '身份未知' : ROLE_INFO[player.role].name"
                             severity="info"
                             class="role-tag"

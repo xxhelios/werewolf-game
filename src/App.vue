@@ -684,6 +684,8 @@ function updateGamePlayers(
             const existing = players.value[index];
             const role = isSpectator.value || gamePhase === 'GAME_OVER'
                 ? player.role
+                : ownRole === 'werewolf' && player.role === 'werewolf'
+                    ? player.role
                 : player.id === playerId.value ? ownRole ?? 'unassigned' : 'unassigned';
             return existing.id === player.id
                 && existing.name === player.name
@@ -699,6 +701,8 @@ function updateGamePlayers(
         ...player,
         role: isSpectator.value || gamePhase === 'GAME_OVER'
             ? player.role
+            : ownRole === 'werewolf' && player.role === 'werewolf'
+                ? player.role
             : player.id === playerId.value ? ownRole ?? 'unassigned' : 'unassigned',
         isMe: !isSpectator.value && player.id === playerId.value
     }));
@@ -1210,6 +1214,7 @@ onUnmounted(() => {
                     :night-eliminated-player-ids="nightEliminatedPlayerIds"
                     :max-players="MAX_PLAYERS"
                     :show-roles="isSpectator"
+                    :show-werewolf-roles="currentPlayer?.role === 'werewolf'"
                 />
             </aside>
         </main>

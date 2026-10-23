@@ -121,7 +121,11 @@ function gameProgressFor(room, client, isSpectator = false) {
         return {
             id: player.id,
             name: player.name,
-            role: isSpectator || room.phase === 'GAME_OVER' ? player.role : 'unassigned',
+            role: isSpectator
+                || room.phase === 'GAME_OVER'
+                || (gamePlayer?.role === 'werewolf' && player.role === 'werewolf')
+                ? player.role
+                : 'unassigned',
             isAlive: player.isAlive,
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
             isReady: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(room.phase)
