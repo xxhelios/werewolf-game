@@ -9,7 +9,7 @@ import AppHeader from './components/AppHeader.vue';
 import GameMemo from './components/GameMemo.vue';
 import RoomMembers from './components/RoomMembers.vue';
 import { ROLE_INFO } from './types';
-import type { ActiveGamePhase, ConnectionState, GamePhase, MemoEntry, Player, Role, VoteResult, WitchPotions } from './types';
+import type { ActiveGamePhase, ConnectionState, GamePhase, MemoEntry, Player, Role, RoleCounts, VoteResult, WitchPotions } from './types';
 
 interface RoomPlayer {
     id: string;
@@ -36,6 +36,7 @@ type ServerMessage =
         type: 'game-progress';
         phase: ActiveGamePhase;
         players: GamePlayer[];
+        roleCounts: RoleCounts;
         readyPlayerIds: string[];
         countdownSeconds: number | null;
         role: Role | null;
@@ -73,6 +74,7 @@ const roomCodeInput = ref('');
 const roomCode = ref<string | null>(null);
 const playerId = ref<string | null>(null);
 const players = ref<Player[]>([]);
+const roleCounts = ref<RoleCounts | null>(null);
 const phase = ref<GamePhase>('LOBBY');
 const connectionState = ref<ConnectionState>('connecting');
 const roomError = ref('');
@@ -131,6 +133,16 @@ const waitingDescription = computed(() => {
 const roleDetails = computed(() => {
     const role = currentPlayer.value?.role;
     return role && role !== 'unassigned' ? ROLE_INFO[role] : { name: '未知', tip: '' };
+});
+const roleCountTags = computed(() => {
+    const counts = roleCounts.value;
+    if (!counts) return [];
+    return (Object.keys(ROLE_INFO) as Role[])
+        .filter(role => counts[role] > 0)
+        .map(role => ({
+            role,
+            label: `${ROLE_INFO[role].name} × ${counts[role]}`
+        }));
 });
 const phaseTitle = computed(() => ({
     LOBBY: '等待玩家',
@@ -281,6 +293,14 @@ function isWitchPotions(value: unknown): value is WitchPotions {
         && typeof value.poisonUsed === 'boolean';
 }
 
+function isRoleCounts(value: unknown): value is RoleCounts {
+    return isRecord(value)
+        && (Object.keys(ROLE_INFO) as Role[]).every(role => {
+            const count = value[role];
+            return typeof count === 'number' && Number.isInteger(count) && count >= 0;
+        });
+}
+
 function isVoteResultList(value: unknown): value is VoteResult[] {
     return Array.isArray(value) && value.every(result =>
         isRecord(result)
@@ -363,6 +383,7 @@ function parseServerMessage(value: unknown): ServerMessage | null {
         value.type === 'game-progress'
         && isGamePhase(value.phase)
         && isGamePlayerList(value.players)
+        && isRoleCounts(value.roleCounts)
         && Array.isArray(value.readyPlayerIds)
         && value.readyPlayerIds.every(id => typeof id === 'string')
         && (value.countdownSeconds === null || (
@@ -393,6 +414,7 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             type: 'game-progress',
             phase: value.phase,
             players: value.players,
+            roleCounts: value.roleCounts,
             readyPlayerIds: value.readyPlayerIds,
             countdownSeconds: value.countdownSeconds,
             role: value.role,
@@ -517,6 +539,7 @@ function handleRoomMessage(message: ServerMessage): void {
         roomCode.value = null;
         hostId.value = null;
         players.value = [];
+        roleCounts.value = null;
         roomStarted.value = false;
         phase.value = 'LOBBY';
         countdownSeconds.value = null;
@@ -572,6 +595,7 @@ function handleRoomMessage(message: ServerMessage): void {
         roomStarted.value = true;
         nightEliminatedPlayerIds.value = [];
         phase.value = message.phase;
+        roleCounts.value = message.roleCounts;
         countdownSeconds.value = message.countdownSeconds;
         nightEliminatedPlayerIds.value = message.nightEliminatedPlayerIds;
         updateGamePlayers(message.players, message.phase, message.role);
@@ -910,6 +934,17 @@ onUnmounted(() => {
                             <strong>{{ roleDetails.name }}</strong>
                             <span>{{ roleDetails.tip }}</span>
                         </div>
+                        <section v-if="roleCountTags.length" class="role-configuration" aria-label="本局身份配置">
+                            <h3>本局配置</h3>
+                            <div class="role-count-list">
+                                <Tag
+                                    v-for="item in roleCountTags"
+                                    :key="item.role"
+                                    :value="item.label"
+                                    severity="info"
+                                />
+                            </div>
+                        </section>
                         <Message v-if="phase === 'GAME_OVER'" severity="success" :closable="false">
                             本局结束，请查看游戏备忘录中的淘汰结果与胜负公告。
                         </Message>
@@ -1397,6 +1432,26 @@ button, input {
 .role-card > span:last-child {
     color: var(--p-surface-300);
     font-size: 0.9rem;
+}
+
+.role-configuration {
+    margin: 0 0 24px;
+    padding: 14px 16px;
+    border: 1px solid var(--p-surface-800);
+    border-radius: var(--p-border-radius-lg);
+    background: var(--p-surface-900);
+}
+
+.role-configuration h3 {
+    margin: 0 0 12px;
+    color: var(--p-surface-200);
+    font-size: 0.95rem;
+}
+
+.role-count-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
 .logs-card .p-card-body,

@@ -126,6 +126,7 @@ function gameProgressFor(room, client) {
         type: 'game-progress',
         phase: room.phase,
         players: publicPlayers,
+        roleCounts: room.roleCounts,
         readyPlayerIds: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(room.phase)
             ? [...room.readyPlayerIds]
             : [],
@@ -542,6 +543,20 @@ function shuffledRoles(playerCount) {
     return roles;
 }
 
+function roleCountsFor(roles) {
+    const counts = {
+        werewolf: 0,
+        seer: 0,
+        witch: 0,
+        hunter: 0,
+        villager: 0
+    };
+    roles.forEach(role => {
+        counts[role] += 1;
+    });
+    return counts;
+}
+
 function beginGame(room, initiator) {
     clearReadyCountdown(room);
     clearHiddenActionDelay(room);
@@ -564,6 +579,7 @@ function beginGame(room, initiator) {
     room.eliminatedPlayerIds = [];
     room.nightEliminatedPlayerIds = [];
     const roles = shuffledRoles(room.players.length);
+    room.roleCounts = roleCountsFor(roles);
     room.gamePlayers = room.players.map((player, index) => ({
         id: player.id,
         name: player.name,

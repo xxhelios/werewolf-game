@@ -14,6 +14,8 @@ export type GamePhase =
 export type ActiveGamePhase = Exclude<GamePhase, 'LOBBY'>;
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'failed';
 
+export type RoleCounts = Record<Role, number>;
+
 export const ROLE_INFO: Record<Role, { name: string; tip: string }> = {
     werewolf: { name: '🐺 狼人', tip: '每晚寻找目标并击杀一名好人。' },
     seer: { name: '🔮 预言家', tip: '每晚可以查验一名玩家的真实身份。' },
