@@ -586,7 +586,7 @@ function leaveRoom(client) {
 }
 
 function shuffledRoles(playerCount) {
-    const wolfCount = playerCount >= 7 ? 2 : 1;
+    const wolfCount = playerCount === 8 ? 3 : playerCount >= 7 ? 2 : 1;
     const hasHunter = playerCount >= 7;
     const roles = [
         ...Array(wolfCount).fill('werewolf'),
