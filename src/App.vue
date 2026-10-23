@@ -852,6 +852,13 @@ function wolfPartnerIntentions(targetId: string): string[] {
         .map(intention => intention.playerName);
 }
 
+function voterNames(result: VoteResult): string {
+    const names = result.voterIds.map(voterId =>
+        players.value.find(player => player.id === voterId)?.name ?? '未知玩家'
+    );
+    return names.length ? names.join('、') : '无';
+}
+
 function selectWitchTarget(action: 'witch-save' | 'witch-poison', player: Player): void {
     if (!canChooseAction.value || currentPlayer.value?.role !== 'witch') return;
     const selectedTarget = action === 'witch-save' ? selectedSaveTargetId : selectedPoisonTargetId;
@@ -1094,7 +1101,7 @@ onUnmounted(() => {
                                     <div class="vote-result-details">
                                         <span>{{ result.targetName }}</span>
                                         <small>
-                                            投票玩家 ID：{{ result.voterIds.length ? result.voterIds.join('、') : '无' }}
+                                            投票玩家：{{ voterNames(result) }}
                                         </small>
                                     </div>
                                     <Tag

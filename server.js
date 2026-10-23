@@ -314,7 +314,12 @@ function resolveRound(room) {
     room.seerResult = null;
     room.wolfTargetId = null;
     const voteSummary = room.voteResults
-        .map(result => `${result.targetName} ${result.votes} 票（投票者 ID：${result.voterIds.join('、') || '无'}）`)
+        .map(result => {
+            const voterNames = result.voterIds.map(voterId =>
+                room.gamePlayers.find(player => player.id === voterId)?.name ?? '未知玩家'
+            );
+            return `${result.targetName} ${result.votes} 票（投票玩家：${voterNames.join('、') || '无'}）`;
+        })
         .join('，');
     const result = voteEliminatedNames.length > 0
         ? `投票结果公示：${voteSummary}。投票淘汰：${voteEliminatedNames.join('、')}。`
