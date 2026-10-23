@@ -768,8 +768,7 @@ function handleMessage(client, message) {
             return;
         }
         if (message.isReady && room.phase === 'DAY_VOTE' && !room.votes.has(client.id)) {
-            sendError(client, '请先提交投票。');
-            return;
+            room.votes.set(client.id, null);
         }
         updateReadiness(room, client, message.isReady);
         return;

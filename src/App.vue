@@ -188,7 +188,7 @@ const phaseDescription = computed(() => {
             ? '选择一位玩家查验身份，确认后点击“准备就绪”。'
             : '预言家查验中，请等待预言家完成行动。';
     }
-    if (phase.value === 'DAY_VOTE') return '请完成讨论并投票，然后点击“准备就绪”。投票内容不会公开。';
+    if (phase.value === 'DAY_VOTE') return '请选择一位玩家投票，或不选择目标直接确认弃权。投票内容不会公开。';
     return '本局游戏已结束。';
 });
 const aliveTargets = computed(() => players.value.filter(player => player.isAlive && !player.isMe));
@@ -250,7 +250,6 @@ const canReady = computed(() => {
     if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !selectedWolfTargetId.value) {
         return false;
     }
-    if (phase.value === 'DAY_VOTE' && !selectedVoteTargetId.value) return false;
     return phase.value !== 'GAME_OVER';
 });
 const canChooseAction = computed(() =>
@@ -1092,6 +1091,7 @@ onUnmounted(() => {
                                 @click="selectVoteTarget(player)"
                             />
                             <span v-if="selectedVoteTargetId" class="private-vote-note">已投票，内容仅自己可见</span>
+                            <span v-else class="private-vote-note">不选择目标并确认，将视为弃权</span>
                         </div>
                         <Message v-if="countdownSeconds !== null" severity="info" :closable="false" class="countdown-message">
                             {{ countdownSeconds }} 秒后进入下一阶段
@@ -1104,7 +1104,9 @@ onUnmounted(() => {
                         </div>
                         <div v-if="phase !== 'GAME_OVER' && canConfirmPhase" class="action-row">
                             <Button
-                                :label="readyButtonLabel"
+                                :label="phase === 'DAY_VOTE' && !selectedVoteTargetId && !currentPlayer?.isReady
+                                    ? '确认弃权'
+                                    : readyButtonLabel"
                                 :icon="phase === 'DAY_DEATH_SPEECH'
                                     ? 'pi pi-check'
                                     : currentPlayer?.isReady ? 'pi pi-times' : 'pi pi-check'"
