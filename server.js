@@ -1146,7 +1146,14 @@ function handleMessage(client, message) {
     sendError(client, '不支持的请求类型。');
 }
 
-function playerInRoom(playerId) {
+function playerInRoom(playerId, roomCode) {
+    const room = rooms.get(roomCode);
+    if (!room) return null;
+    const player = room.players.find(candidate => candidate.id === playerId);
+    return player ? { player, room } : null;
+}
+
+function playerInAnyRoom(playerId) {
     for (const room of rooms.values()) {
         const player = room.players.find(candidate => candidate.id === playerId);
         if (player) return { player, room };
@@ -1219,11 +1226,17 @@ const webSocketServer = new WebSocketServer({ server, maxPayload: 1024 });
 webSocketServer.on('connection', (socket, request) => {
     const requestUrl = new URL(request.url, 'http://localhost');
     const requestedPlayerId = requestUrl.searchParams.get('playerId');
+    const requestedRoomCode = requestUrl.searchParams.get('roomCode')?.toUpperCase();
     const isValidPlayerId = typeof requestedPlayerId === 'string'
         && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedPlayerId);
-    const existingPlayer = isValidPlayerId ? playerInRoom(requestedPlayerId) : null;
+    const isValidRoomCode = typeof requestedRoomCode === 'string'
+        && /^[A-Z0-9]{6}$/.test(requestedRoomCode);
+    const existingPlayer = isValidPlayerId && isValidRoomCode
+        ? playerInRoom(requestedPlayerId, requestedRoomCode)
+        : null;
+    const playerAlreadyInRoom = isValidPlayerId ? playerInAnyRoom(requestedPlayerId) : null;
     const client = existingPlayer?.player ?? {
-        id: isValidPlayerId ? requestedPlayerId : crypto.randomUUID(),
+        id: isValidPlayerId && !playerAlreadyInRoom ? requestedPlayerId : crypto.randomUUID(),
         name: null,
         roomCode: null,
         socket: null

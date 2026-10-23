@@ -19,6 +19,7 @@ const MAX_PLAYERS = 12;
 const MAX_MEMO_ENTRIES = 200;
 const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
 const PLAYER_ID_STORAGE_KEY = 'werewolf-player-id';
+const ROOM_CODE_STORAGE_KEY = 'werewolf-room-code';
 const PLAYER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const FRUIT_NAMES = [
@@ -76,6 +77,7 @@ let roomConnection: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 let componentUnmounted = false;
+let savedResumeRoomCode: string | null = null;
 
 const hostId = ref<string | null>(null);
 const isHost = computed(() => !isSpectator.value && Boolean(playerId.value) && hostId.value === playerId.value);
@@ -346,9 +348,15 @@ function spectateRoom(): void {
 
 function handleRoomMessage(message: ServerMessage): void {
     if (message.type === 'connected') {
+        const previousPlayerId = playerId.value;
         playerId.value = message.playerId;
         try {
             localStorage.setItem(PLAYER_ID_STORAGE_KEY, message.playerId);
+            if (previousPlayerId && previousPlayerId !== message.playerId) {
+                savedResumeRoomCode = null;
+                localStorage.removeItem(ROOM_CODE_STORAGE_KEY);
+                setRoomError('玩家身份与已保存的房间信息不匹配，请重新加入房间。');
+            }
         } catch (error) {
             console.error('Unable to persist player identity.', error);
             setRoomError('无法保存玩家身份，刷新后将无法自动返回房间。');
@@ -364,6 +372,14 @@ function handleRoomMessage(message: ServerMessage): void {
         return;
     }
     if (message.type === 'left-room') {
+        roomError.value = '';
+        savedResumeRoomCode = null;
+        try {
+            localStorage.removeItem(ROOM_CODE_STORAGE_KEY);
+        } catch (error) {
+            console.error('Unable to clear saved room identity.', error);
+            setRoomError('无法清除已保存的房间信息。');
+        }
         isSpectator.value = false;
         roomCode.value = null;
         hostId.value = null;
@@ -386,7 +402,6 @@ function handleRoomMessage(message: ServerMessage): void {
         selectedSeerTargetId.value = null;
         selectedVoteTargetId.value = null;
         runoffCandidateIds.value = [];
-        roomError.value = '';
         addLog('你已退出房间。');
         return;
     }
@@ -399,6 +414,13 @@ function handleRoomMessage(message: ServerMessage): void {
     }
     if (message.type === 'room-state') {
         roomCode.value = message.room.code;
+        savedResumeRoomCode = message.room.code;
+        try {
+            localStorage.setItem(ROOM_CODE_STORAGE_KEY, message.room.code);
+        } catch (error) {
+            console.error('Unable to persist room identity.', error);
+            setRoomError('无法保存房间信息，刷新后可能无法自动恢复房间。');
+        }
         hostId.value = message.room.hostId;
         players.value = message.room.players.map(player => ({
             ...player,
@@ -529,6 +551,8 @@ function connectToRoomService(): void {
         return;
     }
     websocketUrl.searchParams.set('playerId', playerId.value);
+    const resumeRoomCode = roomCode.value ?? savedResumeRoomCode;
+    if (resumeRoomCode) websocketUrl.searchParams.set('roomCode', resumeRoomCode);
     const connection = new WebSocket(websocketUrl);
     roomConnection = connection;
     connection.addEventListener('open', () => {
@@ -690,6 +714,10 @@ onMounted(() => {
         return;
     }
     try {
+        const savedRoomCode = localStorage.getItem(ROOM_CODE_STORAGE_KEY);
+        savedResumeRoomCode = savedRoomCode && ROOM_CODE_PATTERN.test(savedRoomCode)
+            ? savedRoomCode
+            : null;
         const savedPlayerId = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
         playerId.value = savedPlayerId && PLAYER_ID_PATTERN.test(savedPlayerId)
             ? savedPlayerId
