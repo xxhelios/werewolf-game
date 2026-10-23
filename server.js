@@ -307,7 +307,10 @@ function resolveNight(room) {
     room.wolfTargetId = wolfWinners.length === 1 && highestWolfVotes > 0 ? wolfWinners[0][0] : null;
 
     const eliminatedIds = new Set();
-    if (room.wolfTargetId && room.witchSaveTargetId !== room.wolfTargetId) {
+    const wolfAttackWasSaved = Boolean(
+        room.wolfTargetId && room.witchSaveTargetId === room.wolfTargetId
+    );
+    if (room.wolfTargetId && !wolfAttackWasSaved) {
         eliminatedIds.add(room.wolfTargetId);
     }
     if (room.witchPoisonTargetId) eliminatedIds.add(room.witchPoisonTargetId);
@@ -324,7 +327,9 @@ function resolveNight(room) {
         playerId: null,
         text: names.length > 0
             ? `天亮了，昨夜淘汰：${names.join('、')}。`
-            : '天亮了，昨夜无人淘汰。'
+            : room.wolfTargetId
+                ? '天亮了，昨夜无人淘汰。'
+                : '天亮了，昨夜无人淘汰（狼人未形成有效袭击目标）。'
     });
     return winnerFor(room);
 }

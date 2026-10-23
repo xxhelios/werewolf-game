@@ -200,7 +200,9 @@ const phaseReadyPlayers = computed(() => players.value.filter(player =>
 ));
 const readyPlayerCount = computed(() => phaseReadyPlayers.value.filter(player => player.isReady).length);
 const connectedPlayerCount = computed(() => phaseReadyPlayers.value.length);
-const wolfTargetName = computed(() => players.value.find(player => player.id === wolfTargetId.value)?.name ?? '无');
+const wolfTargetName = computed(() => wolfTargetId.value
+    ? players.value.find(player => player.id === wolfTargetId.value)?.name ?? '未知玩家'
+    : '狼人未形成有效袭击目标');
 const readyButtonLabel = computed(() => {
     if (phase.value === 'ROLE_REVEAL' && currentPlayer.value?.isReady) return '已准备就绪';
     if (phase.value === 'DAY_DEATH_SPEECH') {
@@ -1037,7 +1039,7 @@ onUnmounted(() => {
                         </div>
                         <div v-else-if="phase === 'NIGHT_WITCH' && currentPlayer?.role === 'witch' && currentPlayer.isAlive" class="witch-panel">
                             <Message severity="warn" :closable="false">
-                                今晚被狼人袭击：{{ wolfTargetName }}
+                                今晚狼人袭击目标：{{ wolfTargetName }}
                             </Message>
                             <p class="potion-status">
                                 解药：{{ witchPotions.saveUsed ? '已用' : '可用' }}
