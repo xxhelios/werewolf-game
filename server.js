@@ -77,6 +77,10 @@ function roomFor(client) {
     return client.roomCode ? rooms.get(client.roomCode) : null;
 }
 
+function spectatorRoomFor(client) {
+    return client.spectatingRoomCode ? rooms.get(client.spectatingRoomCode) : null;
+}
+
 function broadcastRoomState(room) {
     const message = {
         type: 'room-state',
@@ -92,11 +96,13 @@ function broadcastRoomState(room) {
         }
     };
     room.players.forEach(player => send(player, message));
+    room.spectators?.forEach(spectator => send(spectator, message));
 }
 
 function broadcastRoomEvent(room, event) {
     const message = { type: 'room-event', ...event };
     room.players.forEach(player => send(player, message));
+    room.spectators?.forEach(spectator => send(spectator, message));
 }
 
 function connectedPlayers(room) {
@@ -108,14 +114,14 @@ function connectedPlayers(room) {
     });
 }
 
-function gameProgressFor(room, client) {
+function gameProgressFor(room, client, isSpectator = false) {
     const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
     const publicPlayers = room.gamePlayers.map(player => {
         const roomPlayer = room.players.find(candidate => candidate.id === player.id);
         return {
             id: player.id,
             name: player.name,
-            role: room.phase === 'GAME_OVER' ? player.role : 'unassigned',
+            role: isSpectator || room.phase === 'GAME_OVER' ? player.role : 'unassigned',
             isAlive: player.isAlive,
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
             isReady: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(room.phase)
@@ -131,14 +137,14 @@ function gameProgressFor(room, client) {
             ? [...room.readyPlayerIds]
             : [],
         countdownSeconds: room.countdownSeconds,
-        role: gamePlayer?.role ?? null,
-        wolfTargetId: gamePlayer?.role === 'witch' && room.phase === 'NIGHT_WITCH'
+        role: isSpectator ? null : gamePlayer?.role ?? null,
+        wolfTargetId: !isSpectator && gamePlayer?.role === 'witch' && room.phase === 'NIGHT_WITCH'
             ? room.wolfTargetId
             : null,
-        witchPotions: gamePlayer?.role === 'witch'
+        witchPotions: !isSpectator && gamePlayer?.role === 'witch'
             ? { saveUsed: room.witchPotions.saveUsed, poisonUsed: room.witchPotions.poisonUsed }
             : null,
-        seerResult: gamePlayer?.role === 'seer' ? room.seerResult : null,
+        seerResult: !isSpectator && gamePlayer?.role === 'seer' ? room.seerResult : null,
         eliminatedPlayerIds: room.eliminatedPlayerIds,
         nightEliminatedPlayerIds: room.nightEliminatedPlayerIds,
         voteResults: room.voteResults,
@@ -146,17 +152,18 @@ function gameProgressFor(room, client) {
         hunterShotPending: room.hunterShotPending,
         hunterId: room.hunterShotPending ? room.hunterId : null,
         hunterShotTargetId: room.hunterShotTargetId,
-        selectedWolfTargetId: gamePlayer?.role === 'werewolf' ? room.wolfTargets.get(client.id) ?? null : null,
-        selectedSaveTargetId: gamePlayer?.role === 'witch' ? room.witchSaveTargetId : null,
-        selectedPoisonTargetId: gamePlayer?.role === 'witch' ? room.witchPoisonTargetId : null,
-        selectedSeerTargetId: gamePlayer?.role === 'seer' ? room.seerTargetId : null,
-        selectedVoteTargetId: room.votes.get(client.id) ?? null
+        selectedWolfTargetId: !isSpectator && gamePlayer?.role === 'werewolf' ? room.wolfTargets.get(client.id) ?? null : null,
+        selectedSaveTargetId: !isSpectator && gamePlayer?.role === 'witch' ? room.witchSaveTargetId : null,
+        selectedPoisonTargetId: !isSpectator && gamePlayer?.role === 'witch' ? room.witchPoisonTargetId : null,
+        selectedSeerTargetId: !isSpectator && gamePlayer?.role === 'seer' ? room.seerTargetId : null,
+        selectedVoteTargetId: !isSpectator ? room.votes.get(client.id) ?? null : null
     };
     return message;
 }
 
 function broadcastGameProgress(room) {
     room.players.forEach(player => send(player, gameProgressFor(room, player)));
+    room.spectators?.forEach(spectator => send(spectator, gameProgressFor(room, spectator, true)));
 }
 
 function clearReadyCountdown(room) {
@@ -226,19 +233,27 @@ function winnerFor(room) {
 function resolveRound(room) {
     const eliminatedIds = new Set(room.nightEliminatedPlayerIds);
     const voteCandidates = room.gamePlayers.filter(player => player.isAlive);
-    const voteCounts = new Map();
+    const votersByTarget = new Map();
     connectedPlayers(room)
         .forEach(player => {
             const targetId = room.votes.get(player.id);
-            if (targetId) voteCounts.set(targetId, (voteCounts.get(targetId) || 0) + 1);
+            if (targetId) {
+                const voterIds = votersByTarget.get(targetId) || [];
+                voterIds.push(player.id);
+                votersByTarget.set(targetId, voterIds);
+            }
         });
     room.voteResults = voteCandidates.map(player => ({
         targetId: player.id,
         targetName: player.name,
-        votes: voteCounts.get(player.id) || 0,
+        voterIds: votersByTarget.get(player.id) || [],
+        votes: votersByTarget.get(player.id)?.length || 0,
         eliminated: false,
         hunterShot: false
     }));
+    const voteCounts = new Map(
+        room.voteResults.map(result => [result.targetId, result.votes])
+    );
     const highestVoteCount = Math.max(0, ...voteCounts.values());
     const voteWinners = [...voteCounts.entries()].filter(([, count]) => count === highestVoteCount);
     const voteEliminatedIds = new Set();
@@ -277,7 +292,7 @@ function resolveRound(room) {
     room.seerResult = null;
     room.wolfTargetId = null;
     const voteSummary = room.voteResults
-        .map(result => `${result.targetName} ${result.votes} 票`)
+        .map(result => `${result.targetName} ${result.votes} 票（投票者 ID：${result.voterIds.join('、') || '无'}）`)
         .join('，');
     const result = voteEliminatedNames.length > 0
         ? `投票结果公示：${voteSummary}。投票淘汰：${voteEliminatedNames.join('、')}。`
@@ -483,6 +498,18 @@ function enterRoom(client, name, room) {
 }
 
 function leaveRoom(client) {
+    const spectatorRoom = spectatorRoomFor(client);
+    if (spectatorRoom) {
+        spectatorRoom.spectators = spectatorRoom.spectators.filter(spectator => spectator !== client);
+        client.spectatingRoomCode = null;
+        send(client, { type: 'left-room' });
+        broadcastRoomEvent(spectatorRoom, {
+            playerId: null,
+            text: '一名游客离开了观战。'
+        });
+        return;
+    }
+
     const room = roomFor(client);
     if (!room) {
         sendError(client, '你不在房间中。');
@@ -624,8 +651,45 @@ function handleMessage(client, message) {
         return;
     }
 
+    if (message.type === 'spectate-room') {
+        if (client.roomCode || client.spectatingRoomCode) {
+            sendError(client, '你已经在一个房间里了。');
+            return;
+        }
+        const code = typeof message.code === 'string' ? message.code.trim().toUpperCase() : '';
+        if (!/^[A-Z0-9]{6}$/.test(code)) {
+            sendError(client, '请输入有效的 6 位房间码。');
+            return;
+        }
+        const room = rooms.get(code);
+        if (!room) {
+            sendError(client, '找不到这个房间，请检查房间码。');
+            return;
+        }
+        room.spectators = room.spectators || [];
+        room.spectators.push(client);
+        client.spectatingRoomCode = room.code;
+        send(client, { type: 'spectator-joined', code: room.code });
+        send(client, {
+            type: 'room-state',
+            room: {
+                code: room.code,
+                hostId: room.hostId,
+                players: room.players.map(player => ({
+                    id: player.id,
+                    name: player.name,
+                    isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN),
+                    isReady: false
+                }))
+            }
+        });
+        if (room.started) send(client, gameProgressFor(room, client, true));
+        broadcastRoomEvent(room, { playerId: null, text: '一名游客加入观战。' });
+        return;
+    }
+
     if (message.type === 'create-room') {
-        if (client.roomCode) {
+        if (client.roomCode || client.spectatingRoomCode) {
             sendError(client, '你已经在一个房间里了。');
             return;
         }
@@ -644,14 +708,14 @@ function handleMessage(client, message) {
             return;
         }
         const { code } = result;
-        const room = { code, hostId: client.id, players: [], started: false, gamePlayers: null };
+        const room = { code, hostId: client.id, players: [], spectators: [], started: false, gamePlayers: null };
         rooms.set(code, room);
         enterRoom(client, name, room);
         return;
     }
 
     if (message.type === 'join-room') {
-        if (client.roomCode) {
+        if (client.roomCode || client.spectatingRoomCode) {
             sendError(client, '你已经在一个房间里了。');
             return;
         }
@@ -1101,6 +1165,16 @@ webSocketServer.on('connection', (socket, request) => {
     socket.on('close', () => {
         if (client.socket !== socket) return;
         client.socket = null;
+        const spectatorRoom = spectatorRoomFor(client);
+        if (spectatorRoom) {
+            spectatorRoom.spectators = spectatorRoom.spectators.filter(spectator => spectator !== client);
+            client.spectatingRoomCode = null;
+            broadcastRoomEvent(spectatorRoom, {
+                playerId: null,
+                text: '一名游客离开了观战。'
+            });
+            return;
+        }
         const room = roomFor(client);
         if (!room) return;
 

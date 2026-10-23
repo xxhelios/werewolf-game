@@ -43,6 +43,7 @@ export interface VoteResult {
     targetId: string;
     targetName: string;
     votes: number;
+    voterIds: string[];
     eliminated: boolean;
     hunterShot: boolean;
 }

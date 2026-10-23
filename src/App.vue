@@ -30,6 +30,7 @@ interface GamePlayer {
 type ServerMessage =
     | { type: 'connected'; playerId: string }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
+    | { type: 'spectator-joined'; code: string }
     | { type: 'left-room' }
     | { type: 'game-started'; phase: ActiveGamePhase; role: Role | null; players: GamePlayer[] }
     | {
@@ -72,6 +73,7 @@ const createRoomCodeInput = ref('');
 const renameName = ref('');
 const roomCodeInput = ref('');
 const roomCode = ref<string | null>(null);
+const isSpectator = ref(false);
 const playerId = ref<string | null>(null);
 const players = ref<Player[]>([]);
 const roleCounts = ref<RoleCounts | null>(null);
@@ -104,10 +106,11 @@ let reconnectAttempts = 0;
 let componentUnmounted = false;
 
 const hostId = ref<string | null>(null);
-const isHost = computed(() => Boolean(playerId.value) && hostId.value === playerId.value);
+const isHost = computed(() => !isSpectator.value && Boolean(playerId.value) && hostId.value === playerId.value);
 const currentPlayer = computed(() => players.value.find(player => player.isMe));
 const roomStatus = computed(() => {
     if (!roomCode.value) return '未加入房间';
+    if (isSpectator.value) return '观战中';
     return phase.value === 'LOBBY' ? '等待玩家' : '游戏进行中';
 });
 const connectionLabel = computed<Record<ConnectionState, string>>(() => ({
@@ -159,6 +162,12 @@ const phaseTitle = computed(() => ({
     GAME_OVER: '游戏结束'
 })[phase.value]);
 const phaseDescription = computed(() => {
+    if (isSpectator.value) {
+        if (phase.value === 'DAY_VOTE_RESULT' && hunterShotPending.value) {
+            return '观战模式：猎人正在决定是否开枪，玩家身份与游戏流程均实时公开。';
+        }
+        return `观战模式：当前为${phaseTitle.value}，可在房间成员列表查看所有玩家身份。`;
+    }
     if (phase.value === 'DAY_VOTE_RESULT') {
         if (hunterShotPending.value && currentPlayer.value?.id === hunterId.value) {
             return '你被投票淘汰了。可以选择一名仍存活的玩家开枪带走，或选择不开枪。';
@@ -313,6 +322,8 @@ function isVoteResultList(value: unknown): value is VoteResult[] {
         && typeof result.votes === 'number'
         && Number.isInteger(result.votes)
         && result.votes >= 0
+        && Array.isArray(result.voterIds)
+        && result.voterIds.every(id => typeof id === 'string')
         && typeof result.eliminated === 'boolean'
         && typeof result.hunterShot === 'boolean'
     );
@@ -347,6 +358,9 @@ function parseServerMessage(value: unknown): ServerMessage | null {
         return { type: 'connected', playerId: value.playerId };
     }
     if (value.type === 'left-room') return { type: 'left-room' };
+    if (value.type === 'spectator-joined' && typeof value.code === 'string') {
+        return { type: 'spectator-joined', code: value.code };
+    }
     if (value.type === 'error' && typeof value.message === 'string') {
         return { type: 'error', message: value.message };
     }
@@ -523,6 +537,16 @@ function joinRoom(): void {
     sendRoomMessage({ type: 'join-room', name, code });
 }
 
+function spectateRoom(): void {
+    const code = roomCodeInput.value.trim().toUpperCase();
+    if (!ROOM_CODE_PATTERN.test(code)) {
+        setRoomError('请输入有效的 6 位房间码。');
+        return;
+    }
+    setRoomError('');
+    sendRoomMessage({ type: 'spectate-room', code });
+}
+
 function handleRoomMessage(message: ServerMessage): void {
     if (message.type === 'connected') {
         playerId.value = message.playerId;
@@ -533,6 +557,9 @@ function handleRoomMessage(message: ServerMessage): void {
             setRoomError('无法保存玩家身份，刷新后将无法自动返回房间。');
         }
         connectionState.value = 'connected';
+        if (isSpectator.value && roomCode.value) {
+            sendRoomMessage({ type: 'spectate-room', code: roomCode.value });
+        }
         return;
     }
     if (message.type === 'error') {
@@ -540,6 +567,7 @@ function handleRoomMessage(message: ServerMessage): void {
         return;
     }
     if (message.type === 'left-room') {
+        isSpectator.value = false;
         roomCode.value = null;
         hostId.value = null;
         players.value = [];
@@ -563,6 +591,13 @@ function handleRoomMessage(message: ServerMessage): void {
         void addLog('你已退出房间。');
         return;
     }
+    if (message.type === 'spectator-joined') {
+        isSpectator.value = true;
+        roomCode.value = message.code;
+        roomError.value = '';
+        void addLog('已进入观战模式，可以查看所有玩家身份与游戏流程。');
+        return;
+    }
     if (message.type === 'room-state') {
         roomCode.value = message.room.code;
         hostId.value = message.room.hostId;
@@ -570,7 +605,7 @@ function handleRoomMessage(message: ServerMessage): void {
             ...player,
             role: 'unassigned',
             isAlive: true,
-            isMe: player.id === playerId.value
+            isMe: !isSpectator.value && player.id === playerId.value
         }));
         if (!renameName.value) {
             renameName.value = players.value.find(player => player.isMe)?.name ?? '';
@@ -647,7 +682,7 @@ function updateGamePlayers(
     const unchanged = players.value.length === gamePlayers.length
         && gamePlayers.every((player, index) => {
             const existing = players.value[index];
-            const role = gamePhase === 'GAME_OVER'
+            const role = isSpectator.value || gamePhase === 'GAME_OVER'
                 ? player.role
                 : player.id === playerId.value ? ownRole ?? 'unassigned' : 'unassigned';
             return existing.id === player.id
@@ -656,16 +691,16 @@ function updateGamePlayers(
                 && existing.isAlive === player.isAlive
                 && existing.isConnected === player.isConnected
                 && existing.isReady === player.isReady
-                && existing.isMe === (player.id === playerId.value);
+                && existing.isMe === (!isSpectator.value && player.id === playerId.value);
         });
     if (unchanged) return;
 
     players.value = gamePlayers.map(player => ({
         ...player,
-        role: gamePhase === 'GAME_OVER'
+        role: isSpectator.value || gamePhase === 'GAME_OVER'
             ? player.role
             : player.id === playerId.value ? ownRole ?? 'unassigned' : 'unassigned',
-        isMe: player.id === playerId.value
+        isMe: !isSpectator.value && player.id === playerId.value
     }));
 }
 
@@ -903,9 +938,21 @@ onUnmounted(() => {
                                 @keyup.enter="joinRoom"
                             />
                             <Button label="加入房间" icon="pi pi-sign-in" severity="secondary" @click="joinRoom" />
+                            <Button label="观战" icon="pi pi-eye" severity="help" outlined @click="spectateRoom" />
                         </div>
                         <Message v-if="roomError" severity="error" :closable="false" class="room-message">
                             {{ roomError }}
+                        </Message>
+                    </template>
+                </Card>
+
+                <Card v-else-if="isSpectator && phase === 'LOBBY'" class="game-card lobby-card">
+                    <template #title>房间观战</template>
+                    <template #subtitle>你正在以游客身份观战，不会占用玩家席位或参与游戏操作。</template>
+                    <template #content>
+                        <div class="room-code">{{ roomCode }}</div>
+                        <Message severity="info" :closable="false">
+                            游戏开始后，你可以查看所有玩家的身份和实时流程。
                         </Message>
                     </template>
                 </Card>
@@ -951,7 +998,10 @@ onUnmounted(() => {
                         <Message v-if="connectionState !== 'connected'" severity="warn" :closable="false" class="room-message">
                             房间连接已断开，正在使用当前玩家 ID 自动重连；游戏进度会在重连后恢复。
                         </Message>
-                        <div class="role-card">
+                        <Message v-if="isSpectator" severity="info" :closable="false">
+                            观战模式 · 你可以查看全部玩家身份和实时游戏进度。
+                        </Message>
+                        <div v-else class="role-card">
                             <span class="eyebrow">你的底牌身份</span>
                             <strong>{{ roleDetails.name }}</strong>
                             <span>{{ roleDetails.tip }}</span>
@@ -1000,7 +1050,12 @@ onUnmounted(() => {
                             <h3>投票统计</h3>
                             <ul class="vote-result-list">
                                 <li v-for="result in voteResults" :key="result.targetId">
-                                    <span>{{ result.targetName }}</span>
+                                    <div class="vote-result-details">
+                                        <span>{{ result.targetName }}</span>
+                                        <small>
+                                            投票玩家 ID：{{ result.voterIds.length ? result.voterIds.join('、') : '无' }}
+                                        </small>
+                                    </div>
                                     <Tag
                                         :value="`${result.votes} 票${result.eliminated ? ' · 淘汰' : ''}${result.hunterShot ? ' · 猎人带走' : ''}`"
                                         :severity="result.eliminated || result.hunterShot ? 'danger' : 'info'"
@@ -1154,6 +1209,7 @@ onUnmounted(() => {
                     :phase="phase"
                     :night-eliminated-player-ids="nightEliminatedPlayerIds"
                     :max-players="MAX_PLAYERS"
+                    :show-roles="isSpectator"
                 />
             </aside>
         </main>
@@ -1294,7 +1350,7 @@ button, input {
 .join-form {
     display: grid;
     width: 100%;
-    grid-template-columns: minmax(0, 1fr) 150px;
+    grid-template-columns: minmax(0, 1fr) 150px 120px;
     align-items: end;
     gap: 10px;
     margin-top: 0;
@@ -1390,6 +1446,19 @@ button, input {
     border: 1px solid var(--p-surface-800);
     border-radius: var(--p-border-radius-md);
     background: var(--p-surface-900);
+}
+
+.vote-result-details {
+    display: grid;
+    min-width: 0;
+    gap: 5px;
+}
+
+.vote-result-details small {
+    color: var(--p-surface-400);
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
 }
 
 .join-form > .p-inputtext {
@@ -1597,6 +1666,16 @@ button, input {
 
     .brand {
         flex-wrap: wrap;
+    }
+}
+
+@media (max-width: 480px) {
+    .join-form {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .join-form > .p-inputtext {
+        grid-column: 1 / -1;
     }
 }
 
