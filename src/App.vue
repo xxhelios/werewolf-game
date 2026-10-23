@@ -15,6 +15,7 @@ type GamePhase =
     | 'NIGHT_SEER'
     | 'DAY_DEATH_SPEECH'
     | 'DAY_VOTE'
+    | 'DAY_VOTE_RESULT'
     | 'GAME_OVER';
 type ActiveGamePhase = Exclude<GamePhase, 'LOBBY'>;
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'failed';
@@ -50,6 +51,13 @@ interface WitchPotions {
     poisonUsed: boolean;
 }
 
+interface VoteResult {
+    targetId: string;
+    targetName: string;
+    votes: number;
+    eliminated: boolean;
+}
+
 type ServerMessage =
     | { type: 'connected'; playerId: string }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
@@ -66,6 +74,8 @@ type ServerMessage =
         seerResult: Role | null;
         eliminatedPlayerIds: string[];
         nightEliminatedPlayerIds: string[];
+        voteResults: VoteResult[];
+        roundWinner: string | null;
         selectedWolfTargetId: string | null;
         selectedSaveTargetId: string | null;
         selectedPoisonTargetId: string | null;
@@ -108,6 +118,8 @@ const waitingNote = ref('等待房主开始游戏...');
 const roomStarted = ref(false);
 const countdownSeconds = ref<number | null>(null);
 const nightEliminatedPlayerIds = ref<string[]>([]);
+const voteResults = ref<VoteResult[]>([]);
+const roundWinner = ref<string | null>(null);
 const wolfTargetId = ref<string | null>(null);
 const selectedWolfTargetId = ref<string | null>(null);
 const selectedSaveTargetId = ref<string | null>(null);
@@ -163,9 +175,13 @@ const phaseTitle = computed(() => ({
     NIGHT_SEER: '第三步 · 预言家查验 🔮',
     DAY_DEATH_SPEECH: '天亮了 · 昨夜淘汰玩家发言',
     DAY_VOTE: '讨论与投票 ☀️',
+    DAY_VOTE_RESULT: '投票结果公示',
     GAME_OVER: '游戏结束'
 })[phase.value]);
 const phaseDescription = computed(() => {
+    if (phase.value === 'DAY_VOTE_RESULT') {
+        return '请查看本轮投票结果。所有在线玩家确认后，游戏将结束或进入下一轮。';
+    }
     if (
         phase.value === 'DAY_DEATH_SPEECH'
         && currentPlayer.value
@@ -198,22 +214,25 @@ const aliveTargets = computed(() => players.value.filter(player => player.isAliv
 const canStartGame = computed(() =>
     isHost.value && !roomStarted.value && players.value.length >= MIN_PLAYERS
 );
-const readyPlayerCount = computed(() => players.value.filter(player =>
-    player.isConnected && player.isAlive && player.isReady
-).length);
-const connectedPlayerCount = computed(() => players.value.filter(player =>
-    player.isConnected && player.isAlive
-).length);
+const phaseReadyPlayers = computed(() => players.value.filter(player =>
+    player.isConnected && (phase.value === 'DAY_VOTE_RESULT' || player.isAlive)
+));
+const readyPlayerCount = computed(() => phaseReadyPlayers.value.filter(player => player.isReady).length);
+const connectedPlayerCount = computed(() => phaseReadyPlayers.value.length);
 const wolfTargetName = computed(() => players.value.find(player => player.id === wolfTargetId.value)?.name ?? '无');
 const readyButtonLabel = computed(() => {
     if (phase.value === 'ROLE_REVEAL' && currentPlayer.value?.isReady) return '已准备就绪';
     if (phase.value === 'DAY_DEATH_SPEECH') {
         return currentPlayer.value?.isReady ? '已入土为安' : '入土为安';
     }
+    if (phase.value === 'DAY_VOTE_RESULT') {
+        return currentPlayer.value?.isReady ? '已确认结果' : '确认结果';
+    }
     return currentPlayer.value?.isReady ? '取消准备' : '准备就绪';
 });
 const canConfirmPhase = computed(() => {
     const player = currentPlayer.value;
+    if (phase.value === 'DAY_VOTE_RESULT') return Boolean(player);
     if (
         phase.value === 'DAY_DEATH_SPEECH'
         && player
@@ -239,8 +258,9 @@ const canReady = computed(() => {
         && player
         && nightEliminatedPlayerIds.value.includes(player.id)
     );
+    const canConfirmVoteResult = phase.value === 'DAY_VOTE_RESULT' && Boolean(player);
     if (!player
-        || (!player.isAlive && !canConfirmDeathSpeech)
+        || (!player.isAlive && !canConfirmDeathSpeech && !canConfirmVoteResult)
         || !canConfirmPhase.value
         || countdownSeconds.value !== null
         || connectionState.value !== 'connected') {
@@ -266,6 +286,7 @@ function isGamePhase(value: unknown): value is ActiveGamePhase {
         || value === 'NIGHT_SEER'
         || value === 'DAY_DEATH_SPEECH'
         || value === 'DAY_VOTE'
+        || value === 'DAY_VOTE_RESULT'
         || value === 'GAME_OVER';
 }
 
@@ -285,6 +306,18 @@ function isWitchPotions(value: unknown): value is WitchPotions {
     return isRecord(value)
         && typeof value.saveUsed === 'boolean'
         && typeof value.poisonUsed === 'boolean';
+}
+
+function isVoteResultList(value: unknown): value is VoteResult[] {
+    return Array.isArray(value) && value.every(result =>
+        isRecord(result)
+        && typeof result.targetId === 'string'
+        && typeof result.targetName === 'string'
+        && typeof result.votes === 'number'
+        && Number.isInteger(result.votes)
+        && result.votes >= 0
+        && typeof result.eliminated === 'boolean'
+    );
 }
 
 function isRoomPlayerList(value: unknown): value is RoomPlayer[] {
@@ -370,6 +403,8 @@ function parseServerMessage(value: unknown): ServerMessage | null {
         && value.eliminatedPlayerIds.every(id => typeof id === 'string')
         && Array.isArray(value.nightEliminatedPlayerIds)
         && value.nightEliminatedPlayerIds.every(id => typeof id === 'string')
+        && isVoteResultList(value.voteResults)
+        && (value.roundWinner === null || typeof value.roundWinner === 'string')
         && (value.selectedWolfTargetId === null || typeof value.selectedWolfTargetId === 'string')
         && (value.selectedSaveTargetId === null || typeof value.selectedSaveTargetId === 'string')
         && (value.selectedPoisonTargetId === null || typeof value.selectedPoisonTargetId === 'string')
@@ -388,6 +423,8 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             seerResult: value.seerResult,
             eliminatedPlayerIds: value.eliminatedPlayerIds,
             nightEliminatedPlayerIds: value.nightEliminatedPlayerIds,
+            voteResults: value.voteResults,
+            roundWinner: value.roundWinner,
             selectedWolfTargetId: value.selectedWolfTargetId,
             selectedSaveTargetId: value.selectedSaveTargetId,
             selectedPoisonTargetId: value.selectedPoisonTargetId,
@@ -547,6 +584,8 @@ function handleRoomMessage(message: ServerMessage): void {
         selectedPoisonTargetId.value = message.selectedPoisonTargetId;
         selectedSeerTargetId.value = message.selectedSeerTargetId;
         selectedVoteTargetId.value = message.selectedVoteTargetId;
+        voteResults.value = message.voteResults;
+        roundWinner.value = message.roundWinner;
         if (previousPhase !== message.phase) {
             void addLog(({
                 ROLE_REVEAL: '游戏开始，请查看各自身份。',
@@ -555,6 +594,7 @@ function handleRoomMessage(message: ServerMessage): void {
                 NIGHT_SEER: '进入预言家查验阶段。',
                 DAY_DEATH_SPEECH: '天亮了，昨夜淘汰的玩家开始发言。',
                 DAY_VOTE: '进入讨论与投票阶段。',
+                DAY_VOTE_RESULT: '本轮投票结束，现公布投票结果。',
                 GAME_OVER: '本局游戏结束。'
             })[message.phase]);
         }
@@ -685,7 +725,7 @@ function selectVoteTarget(player: Player): void {
 
 function toggleReady(): void {
     const player = currentPlayer.value;
-    if (['ROLE_REVEAL', 'DAY_DEATH_SPEECH'].includes(phase.value) && player?.isReady) return;
+    if (['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE_RESULT'].includes(phase.value) && player?.isReady) return;
     if (!player || (!player.isReady && !canReady.value) || countdownSeconds.value !== null) return;
     sendRoomMessage({ type: 'set-ready', isReady: !player.isReady });
 }
@@ -835,6 +875,29 @@ onUnmounted(() => {
                             />
                             <p v-else class="waiting-note">等待房主重新开始游戏。</p>
                         </div>
+                        <div v-else-if="phase === 'DAY_VOTE_RESULT'" class="vote-results">
+                            <Message :severity="roundWinner ? 'success' : 'info'" :closable="false">
+                                <template v-if="roundWinner">
+                                    游戏结束：{{ roundWinner }}。所有在线玩家确认后结束本局。
+                                </template>
+                                <template v-else>
+                                    {{ voteResults.some(result => result.eliminated)
+                                        ? `投票淘汰：${voteResults.filter(result => result.eliminated).map(result => result.targetName).join('、')}。`
+                                        : '平票或无人得票，本轮无人因投票淘汰。' }}
+                                    确认结果后进入下一轮。
+                                </template>
+                            </Message>
+                            <h3>投票统计</h3>
+                            <ul class="vote-result-list">
+                                <li v-for="result in voteResults" :key="result.targetId">
+                                    <span>{{ result.targetName }}</span>
+                                    <Tag
+                                        :value="`${result.votes} 票${result.eliminated ? ' · 淘汰' : ''}`"
+                                        :severity="result.eliminated ? 'danger' : 'info'"
+                                    />
+                                </li>
+                            </ul>
+                        </div>
                         <div v-else-if="phase === 'NIGHT_WEREWOLF' && currentPlayer?.role === 'werewolf' && currentPlayer.isAlive" class="action-row">
                             <Button
                                 v-for="player in aliveTargets"
@@ -910,7 +973,7 @@ onUnmounted(() => {
                         <div v-else-if="!canConfirmPhase && phaseStatusMessage" class="ready-check phase-status">
                             {{ phaseStatusMessage }}
                         </div>
-                        <div v-else-if="phase === 'DAY_VOTE'" class="ready-check">
+                        <div v-else-if="['DAY_VOTE', 'DAY_VOTE_RESULT'].includes(phase)" class="ready-check">
                             已准备 {{ readyPlayerCount }} / {{ connectedPlayerCount }} 位在线玩家
                         </div>
                         <div v-if="phase !== 'GAME_OVER' && canConfirmPhase" class="action-row">
@@ -923,7 +986,7 @@ onUnmounted(() => {
                                 :class="{ 'ready-selected': currentPlayer?.isReady }"
                                 :disabled="countdownSeconds !== null
                                     || (!canReady && !currentPlayer?.isReady)
-                                    || (['ROLE_REVEAL', 'DAY_DEATH_SPEECH'].includes(phase) && currentPlayer?.isReady)"
+                                    || (['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE_RESULT'].includes(phase) && currentPlayer?.isReady)"
                                 @click="toggleReady"
                             />
                         </div>
@@ -968,8 +1031,8 @@ onUnmounted(() => {
                                     />
                                     <Tag
                                         v-if="(
-                                            ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE'].includes(phase)
-                                            && (player.isAlive || (
+                                            ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(phase)
+                                                && (player.isAlive || phase === 'DAY_VOTE_RESULT' || (
                                                 phase === 'DAY_DEATH_SPEECH'
                                                 && nightEliminatedPlayerIds.includes(player.id)
                                             ))
@@ -1194,6 +1257,37 @@ button, input {
 
 .ready-check strong {
     color: var(--p-primary-200);
+}
+
+.vote-results {
+    display: grid;
+    gap: 12px;
+    margin: 12px 0;
+}
+
+.vote-results h3 {
+    margin: 4px 0 0;
+    color: var(--p-surface-100);
+    font-size: 1rem;
+}
+
+.vote-result-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.vote-result-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--p-surface-800);
+    border-radius: var(--p-border-radius-md);
+    background: var(--p-surface-900);
 }
 
 .join-form > .p-inputtext {
