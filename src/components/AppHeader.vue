@@ -8,6 +8,7 @@ defineProps<{
     connectionLabel: string;
     connectionSeverity: string;
     canLeaveRoom: boolean;
+    appVersion: string;
 }>();
 
 defineEmits<{
@@ -18,7 +19,10 @@ defineEmits<{
 <template>
     <header class="topbar">
         <div class="brand">
-            <h1>🐺 宇宙狼人杀</h1>
+            <div class="brand-title">
+                <h1>🐺 宇宙狼人杀</h1>
+                <small>版本 {{ appVersion }}</small>
+            </div>
             <Tag v-if="roomCode" :value="`房间号 ${roomCode}`" severity="info" />
             <Button
                 v-if="roomCode"
@@ -35,3 +39,16 @@ defineEmits<{
         <Tag :value="connectionLabel" :severity="connectionSeverity" />
     </header>
 </template>
+
+<style scoped>
+.brand-title {
+    display: grid;
+    gap: 2px;
+}
+
+.brand-title small {
+    color: var(--p-surface-400);
+    font-size: 0.7rem;
+    line-height: 1;
+}
+</style>

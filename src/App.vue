@@ -13,6 +13,7 @@ import type { GamePlayer, RoomPlayer, ServerMessage, WolfIntention } from './net
 import { ROLE_INFO } from './types';
 import type { ActiveGamePhase, ConnectionState, GamePhase, MemoEntry, Player, Role, RoleCounts, VoteResult, WitchPotions } from './types';
 
+const appVersion = __APP_VERSION__;
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 12;
 const MAX_MEMO_ENTRIES = 200;
@@ -716,6 +717,7 @@ onUnmounted(() => {
             :connection-label="connectionLabel[connectionState]"
             :connection-severity="connectionSeverity"
             :can-leave-room="connectionState === 'connected'"
+            :app-version="appVersion"
             @leave-room="leaveRoom"
         />
         <main class="game-layout">

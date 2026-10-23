@@ -2,6 +2,7 @@ const path = require('node:path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { VueLoaderPlugin } = require('vue-loader');
 const webpack = require('webpack');
+const { version } = require('./package.json');
 
 const defaultWebsocketUrl = 'wss://werewolf-game-rdj6.onrender.com';
 const websocketUrl = process.env.WEBSOCKET_URL?.trim() || defaultWebsocketUrl;
@@ -52,7 +53,8 @@ module.exports = {
     plugins: [
         new VueLoaderPlugin(),
         new webpack.DefinePlugin({
-            __WEBSOCKET_URL__: JSON.stringify(websocketUrl)
+            __WEBSOCKET_URL__: JSON.stringify(websocketUrl),
+            __APP_VERSION__: JSON.stringify(version)
         }),
         new HtmlWebpackPlugin({
             template: './src/index.html'
