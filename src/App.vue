@@ -915,17 +915,6 @@ onUnmounted(() => {
                                 />
                             </div>
                             <div class="name-field">
-                                <label class="field-label" for="player-id">玩家 ID（用于恢复身份）</label>
-                                <InputText
-                                    id="player-id"
-                                    v-model="playerIdInput"
-                                    maxlength="36"
-                                    placeholder="保留上一局玩家 ID"
-                                    class="full-width"
-                                    autocomplete="off"
-                                />
-                            </div>
-                            <div class="name-field">
                                 <label class="field-label" for="create-room-code">自定义房间码（可选）</label>
                                 <InputText
                                     id="create-room-code"
@@ -979,6 +968,9 @@ onUnmounted(() => {
                                 {{ connectionState === 'connected' ? '目前没有可加入的房间。' : '连接房间服务后显示。' }}
                             </p>
                             <small>点击房间号填入上方输入框，再选择加入游戏或观战。</small>
+                            <small class="player-id-label">
+                                玩家 ID：<code>{{ playerIdInput || '连接后生成' }}</code>
+                            </small>
                         </section>
                         <Message v-if="roomError" severity="error" :closable="false" class="room-message">
                             {{ roomError }}
@@ -1458,6 +1450,15 @@ button, input {
     margin: 0;
     color: var(--p-surface-400);
     font-size: 0.82rem;
+}
+
+.player-id-label {
+    overflow-wrap: anywhere;
+}
+
+.player-id-label code {
+    color: var(--p-surface-300);
+    font-family: ui-monospace, Consolas, monospace;
 }
 
 .join-form {
