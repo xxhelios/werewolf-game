@@ -447,6 +447,55 @@ function enterRoom(client, name, room) {
     });
 }
 
+function leaveRoom(client) {
+    const room = roomFor(client);
+    if (!room) {
+        sendError(client, '你不在房间中。');
+        return;
+    }
+
+    clearReadyCountdown(room);
+    room.readyPlayerIds?.delete(client.id);
+    room.votes?.delete(client.id);
+    room.wolfTargets?.delete(client.id);
+    if (room.seerTargetId === client.id) room.seerTargetId = null;
+    if (room.witchSaveTargetId === client.id) room.witchSaveTargetId = null;
+    if (room.witchPoisonTargetId === client.id) room.witchPoisonTargetId = null;
+    room.eliminatedPlayerIds = (room.eliminatedPlayerIds || []).filter(id => id !== client.id);
+    room.nightEliminatedPlayerIds = (room.nightEliminatedPlayerIds || []).filter(id => id !== client.id);
+    room.players = room.players.filter(player => player.id !== client.id);
+    room.gamePlayers = room.gamePlayers?.filter(player => player.id !== client.id) ?? null;
+    if (room.hostId === client.id && room.players.length > 0) {
+        room.hostId = room.players[0].id;
+    }
+    client.roomCode = null;
+    client.name = null;
+    send(client, { type: 'left-room' });
+
+    if (room.players.length === 0 && !room.started) {
+        rooms.delete(room.code);
+        return;
+    }
+
+    if (room.started && room.phase !== 'GAME_OVER' && room.phase !== 'DAY_VOTE_RESULT') {
+        const winner = winnerFor(room);
+        if (winner) {
+            clearHiddenActionDelay(room);
+            room.phase = 'GAME_OVER';
+            room.roundWinner = winner;
+            room.readyPlayerIds.clear();
+            room.gamePlayers.forEach(player => {
+                player.isReady = false;
+            });
+            broadcastRoomEvent(room, { playerId: null, text: `游戏结束：${winner}！` });
+        }
+    }
+    broadcastRoomState(room);
+    if (room.started) broadcastGameProgress(room);
+    broadcastRoomEvent(room, { playerId: null, text: '一名玩家退出了房间。' });
+    startReadyCountdown(room);
+}
+
 function shuffledRoles(playerCount) {
     const wolfCount = playerCount >= 7 ? 2 : 1;
     const roles = [
@@ -512,6 +561,11 @@ function beginGame(room, initiator) {
 function handleMessage(client, message) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) {
         sendError(client, '无效的请求。');
+        return;
+    }
+
+    if (message.type === 'leave-room') {
+        leaveRoom(client);
         return;
     }
 

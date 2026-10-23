@@ -61,6 +61,7 @@ interface VoteResult {
 type ServerMessage =
     | { type: 'connected'; playerId: string }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
+    | { type: 'left-room' }
     | { type: 'game-started'; phase: ActiveGamePhase; role: Role | null; players: GamePlayer[] }
     | {
         type: 'game-progress';
@@ -348,6 +349,7 @@ function parseServerMessage(value: unknown): ServerMessage | null {
     if (value.type === 'connected' && typeof value.playerId === 'string') {
         return { type: 'connected', playerId: value.playerId };
     }
+    if (value.type === 'left-room') return { type: 'left-room' };
     if (value.type === 'error' && typeof value.message === 'string') {
         return { type: 'error', message: value.message };
     }
@@ -531,6 +533,25 @@ function handleRoomMessage(message: ServerMessage): void {
         setRoomError(message.message);
         return;
     }
+    if (message.type === 'left-room') {
+        roomCode.value = null;
+        hostId.value = null;
+        players.value = [];
+        roomStarted.value = false;
+        phase.value = 'LOBBY';
+        countdownSeconds.value = null;
+        nightEliminatedPlayerIds.value = [];
+        voteResults.value = [];
+        roundWinner.value = null;
+        selectedWolfTargetId.value = null;
+        selectedSaveTargetId.value = null;
+        selectedPoisonTargetId.value = null;
+        selectedSeerTargetId.value = null;
+        selectedVoteTargetId.value = null;
+        roomError.value = '';
+        void addLog('你已退出房间。');
+        return;
+    }
     if (message.type === 'room-state') {
         roomCode.value = message.room.code;
         hostId.value = message.room.hostId;
@@ -676,6 +697,10 @@ function startGame(): void {
     if (isHost.value) sendRoomMessage({ type: 'start-game' });
 }
 
+function leaveRoom(): void {
+    if (roomCode.value) sendRoomMessage({ type: 'leave-room' });
+}
+
 function restartGame(): void {
     if (isHost.value && phase.value === 'GAME_OVER') {
         sendRoomMessage({ type: 'restart-game' });
@@ -767,6 +792,16 @@ onUnmounted(() => {
             <div class="brand">
                 <h1>🐺 宇宙狼人杀</h1>
                 <Tag v-if="roomCode" :value="`房间号 ${roomCode}`" severity="info" />
+                <Button
+                    v-if="roomCode"
+                    label="退出房间"
+                    icon="pi pi-sign-out"
+                    severity="secondary"
+                    size="small"
+                    outlined
+                    :disabled="connectionState !== 'connected'"
+                    @click="leaveRoom"
+                />
                 <Tag :value="roomStatus" :severity="roomCode ? 'info' : 'secondary'" />
             </div>
             <Tag :value="connectionLabel[connectionState]" :severity="connectionSeverity" />
