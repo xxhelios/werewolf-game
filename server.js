@@ -22,6 +22,12 @@ function send(client, message) {
 
 function phaseParticipants(room) {
     const livingOnlinePlayers = connectedPlayers(room);
+    if (room.phase === 'DAY_DEATH_SPEECH') {
+        return room.players.filter(player =>
+            room.nightEliminatedPlayerIds.includes(player.id)
+            && player.socket?.readyState === WebSocket.OPEN
+        );
+    }
     const actingRole = {
         NIGHT_WEREWOLF: 'werewolf',
         NIGHT_WITCH: 'witch',
@@ -109,7 +115,7 @@ function gameProgressFor(room, client) {
             role: room.phase === 'GAME_OVER' ? player.role : 'unassigned',
             isAlive: player.isAlive,
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
-            isReady: ['ROLE_REVEAL', 'DAY_VOTE'].includes(room.phase)
+            isReady: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE'].includes(room.phase)
                 && room.readyPlayerIds.has(player.id)
         };
     });
@@ -117,7 +123,7 @@ function gameProgressFor(room, client) {
         type: 'game-progress',
         phase: room.phase,
         players: publicPlayers,
-        readyPlayerIds: ['ROLE_REVEAL', 'DAY_VOTE'].includes(room.phase)
+        readyPlayerIds: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE'].includes(room.phase)
             ? [...room.readyPlayerIds]
             : [],
         countdownSeconds: room.countdownSeconds,
@@ -304,7 +310,8 @@ function advanceGamePhase(room) {
         ROLE_REVEAL: 'NIGHT_WEREWOLF',
         NIGHT_WEREWOLF: 'NIGHT_WITCH',
         NIGHT_WITCH: 'NIGHT_SEER',
-        NIGHT_SEER: 'DAY_VOTE'
+        NIGHT_SEER: 'DAY_VOTE',
+        DAY_DEATH_SPEECH: 'DAY_VOTE'
     };
     if (!nextPhases[room.phase]) return;
     if (room.phase === 'NIGHT_WITCH') {
@@ -312,7 +319,15 @@ function advanceGamePhase(room) {
         room.witchPotions.poisonUsed = room.witchPotions.poisonUsed || room.witchPoisonTargetId !== null;
     }
     const nightWinner = room.phase === 'NIGHT_SEER' ? resolveNight(room) : null;
-    room.phase = nightWinner ? 'GAME_OVER' : nextPhases[room.phase];
+    const hasOnlineNightEliminations = room.phase === 'NIGHT_SEER'
+        && room.nightEliminatedPlayerIds.some(id =>
+            room.players.some(player =>
+                player.id === id && player.socket?.readyState === WebSocket.OPEN
+            )
+        );
+    room.phase = nightWinner
+        ? 'GAME_OVER'
+        : hasOnlineNightEliminations ? 'DAY_DEATH_SPEECH' : nextPhases[room.phase];
     room.readyPlayerIds.clear();
     room.gamePlayers.forEach(player => {
         player.isReady = false;
@@ -572,8 +587,8 @@ function handleMessage(client, message) {
             sendError(client, '准备状态无效。');
             return;
         }
-        if (room.phase === 'ROLE_REVEAL' && !message.isReady) {
-            sendError(client, '查看身份阶段确认后不能取消准备。');
+        if (['ROLE_REVEAL', 'DAY_DEATH_SPEECH'].includes(room.phase) && !message.isReady) {
+            sendError(client, '当前阶段确认后不能取消准备。');
             return;
         }
         if (room.countdownTimer && message.isReady === false) {
@@ -585,7 +600,9 @@ function handleMessage(client, message) {
             return;
         }
         const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
-        if (!gamePlayer?.isAlive) {
+        const isDeathSpeaker = room.phase === 'DAY_DEATH_SPEECH'
+            && room.nightEliminatedPlayerIds.includes(client.id);
+        if (!gamePlayer || (!gamePlayer.isAlive && !isDeathSpeaker)) {
             sendError(client, '淘汰玩家不能提交准备状态。');
             return;
         }

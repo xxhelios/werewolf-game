@@ -13,6 +13,7 @@ type GamePhase =
     | 'NIGHT_WEREWOLF'
     | 'NIGHT_WITCH'
     | 'NIGHT_SEER'
+    | 'DAY_DEATH_SPEECH'
     | 'DAY_VOTE'
     | 'GAME_OVER';
 type ActiveGamePhase = Exclude<GamePhase, 'LOBBY'>;
@@ -160,12 +161,21 @@ const phaseTitle = computed(() => ({
     NIGHT_WEREWOLF: '第一步 · 狼人行动 🐺',
     NIGHT_WITCH: '第二步 · 女巫行动 🧪',
     NIGHT_SEER: '第三步 · 预言家查验 🔮',
+    DAY_DEATH_SPEECH: '天亮了 · 昨夜淘汰玩家发言',
     DAY_VOTE: '讨论与投票 ☀️',
     GAME_OVER: '游戏结束'
 })[phase.value]);
 const phaseDescription = computed(() => {
+    if (
+        phase.value === 'DAY_DEATH_SPEECH'
+        && currentPlayer.value
+        && nightEliminatedPlayerIds.value.includes(currentPlayer.value.id)
+    ) {
+        return '你昨夜被淘汰。请先完成发言，之后点击“入土为安”进入讨论与投票。';
+    }
     if (currentPlayer.value && !currentPlayer.value.isAlive) return '你已被淘汰，请等待本局游戏结束。';
     if (phase.value === 'ROLE_REVEAL') return '请查看你的角色信息，确认后点击“准备就绪”。';
+    if (phase.value === 'DAY_DEATH_SPEECH') return '昨夜淘汰的玩家正在发言，请稍候。';
     if (phase.value === 'NIGHT_WEREWOLF') {
         return currentPlayer.value?.role === 'werewolf'
             ? '狼人选择今晚的袭击目标，确认后点击“准备就绪”。'
@@ -197,10 +207,19 @@ const connectedPlayerCount = computed(() => players.value.filter(player =>
 const wolfTargetName = computed(() => players.value.find(player => player.id === wolfTargetId.value)?.name ?? '无');
 const readyButtonLabel = computed(() => {
     if (phase.value === 'ROLE_REVEAL' && currentPlayer.value?.isReady) return '已准备就绪';
+    if (phase.value === 'DAY_DEATH_SPEECH') {
+        return currentPlayer.value?.isReady ? '已入土为安' : '入土为安';
+    }
     return currentPlayer.value?.isReady ? '取消准备' : '准备就绪';
 });
 const canConfirmPhase = computed(() => {
     const player = currentPlayer.value;
+    if (
+        phase.value === 'DAY_DEATH_SPEECH'
+        && player
+        && !player.isAlive
+        && nightEliminatedPlayerIds.value.includes(player.id)
+    ) return true;
     if (!player?.isAlive) return false;
     if (phase.value === 'NIGHT_WEREWOLF') return player.role === 'werewolf';
     if (phase.value === 'NIGHT_WITCH') return player.role === 'witch';
@@ -215,7 +234,16 @@ const phaseStatusMessages: Partial<Record<GamePhase, string>> = {
 const phaseStatusMessage = computed(() => phaseStatusMessages[phase.value] ?? '');
 const canReady = computed(() => {
     const player = currentPlayer.value;
-    if (!player?.isAlive || !canConfirmPhase.value || countdownSeconds.value !== null || connectionState.value !== 'connected') {
+    const canConfirmDeathSpeech = Boolean(
+        phase.value === 'DAY_DEATH_SPEECH'
+        && player
+        && nightEliminatedPlayerIds.value.includes(player.id)
+    );
+    if (!player
+        || (!player.isAlive && !canConfirmDeathSpeech)
+        || !canConfirmPhase.value
+        || countdownSeconds.value !== null
+        || connectionState.value !== 'connected') {
         return false;
     }
     if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !selectedWolfTargetId.value) {
@@ -236,6 +264,7 @@ function isGamePhase(value: unknown): value is ActiveGamePhase {
         || value === 'NIGHT_WEREWOLF'
         || value === 'NIGHT_WITCH'
         || value === 'NIGHT_SEER'
+        || value === 'DAY_DEATH_SPEECH'
         || value === 'DAY_VOTE'
         || value === 'GAME_OVER';
 }
@@ -524,6 +553,7 @@ function handleRoomMessage(message: ServerMessage): void {
                 NIGHT_WEREWOLF: '进入狼人行动阶段。',
                 NIGHT_WITCH: '进入女巫行动阶段。',
                 NIGHT_SEER: '进入预言家查验阶段。',
+                DAY_DEATH_SPEECH: '天亮了，昨夜淘汰的玩家开始发言。',
                 DAY_VOTE: '进入讨论与投票阶段。',
                 GAME_OVER: '本局游戏结束。'
             })[message.phase]);
@@ -655,7 +685,7 @@ function selectVoteTarget(player: Player): void {
 
 function toggleReady(): void {
     const player = currentPlayer.value;
-    if (phase.value === 'ROLE_REVEAL' && player?.isReady) return;
+    if (['ROLE_REVEAL', 'DAY_DEATH_SPEECH'].includes(phase.value) && player?.isReady) return;
     if (!player || (!player.isReady && !canReady.value) || countdownSeconds.value !== null) return;
     sendRoomMessage({ type: 'set-ready', isReady: !player.isReady });
 }
@@ -886,12 +916,14 @@ onUnmounted(() => {
                         <div v-if="phase !== 'GAME_OVER' && canConfirmPhase" class="action-row">
                             <Button
                                 :label="readyButtonLabel"
-                                :icon="currentPlayer?.isReady ? 'pi pi-times' : 'pi pi-check'"
+                                :icon="phase === 'DAY_DEATH_SPEECH'
+                                    ? 'pi pi-check'
+                                    : currentPlayer?.isReady ? 'pi pi-times' : 'pi pi-check'"
                                 :severity="currentPlayer?.isReady ? 'secondary' : 'success'"
                                 :class="{ 'ready-selected': currentPlayer?.isReady }"
                                 :disabled="countdownSeconds !== null
                                     || (!canReady && !currentPlayer?.isReady)
-                                    || (phase === 'ROLE_REVEAL' && currentPlayer?.isReady)"
+                                    || (['ROLE_REVEAL', 'DAY_DEATH_SPEECH'].includes(phase) && currentPlayer?.isReady)"
                                 @click="toggleReady"
                             />
                         </div>
@@ -935,7 +967,13 @@ onUnmounted(() => {
                                         class="role-tag"
                                     />
                                     <Tag
-                                        v-if="['ROLE_REVEAL', 'DAY_VOTE'].includes(phase) && player.isAlive"
+                                        v-if="(
+                                            ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE'].includes(phase)
+                                            && (player.isAlive || (
+                                                phase === 'DAY_DEATH_SPEECH'
+                                                && nightEliminatedPlayerIds.includes(player.id)
+                                            ))
+                                        )"
                                         :value="player.isReady ? '已准备' : '未准备'"
                                         :severity="player.isReady ? 'success' : 'secondary'"
                                         class="ready-tag"
