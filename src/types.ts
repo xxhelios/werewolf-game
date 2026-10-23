@@ -8,6 +8,7 @@ export type GamePhase =
     | 'NIGHT_SEER'
     | 'DAY_DEATH_SPEECH'
     | 'DAY_VOTE'
+    | 'DAY_VOTE_RUNOFF'
     | 'DAY_VOTE_RESULT'
     | 'GAME_OVER';
 

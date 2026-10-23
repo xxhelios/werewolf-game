@@ -45,7 +45,7 @@ defineProps<{
                         />
                         <Tag
                             v-if="(
-                                ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(phase)
+                                ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RUNOFF', 'DAY_VOTE_RESULT'].includes(phase)
                                 && (player.isAlive || phase === 'DAY_VOTE_RESULT' || (
                                     phase === 'DAY_DEATH_SPEECH' && nightEliminatedPlayerIds.includes(player.id)
                                 ))

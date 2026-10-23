@@ -64,6 +64,7 @@ type ServerMessage =
         selectedPoisonTargetId: string | null;
         selectedSeerTargetId: string | null;
         selectedVoteTargetId: string | null;
+        runoffCandidateIds: string[];
     }
     | { type: 'player-connection'; playerId: string; isConnected: boolean }
     | { type: 'room-event'; playerId: string | null; text: string }
@@ -122,6 +123,7 @@ const selectedSaveTargetId = ref<string | null>(null);
 const selectedPoisonTargetId = ref<string | null>(null);
 const selectedSeerTargetId = ref<string | null>(null);
 const selectedVoteTargetId = ref<string | null>(null);
+const runoffCandidateIds = ref<string[]>([]);
 const witchPotions = ref<WitchPotions>({ saveUsed: false, poisonUsed: false });
 const seerResult = ref<Role | null>(null);
 const logs = ref<MemoEntry[]>([{ text: '[系统] 创建房间或输入房间码加入好友的房间。', isOwnAction: false }]);
@@ -184,6 +186,7 @@ const phaseTitle = computed(() => ({
     NIGHT_SEER: '第三步 · 预言家查验 🔮',
     DAY_DEATH_SPEECH: '天亮了 · 昨夜淘汰玩家发言',
     DAY_VOTE: '讨论与投票 ☀️',
+    DAY_VOTE_RUNOFF: '平票加赛投票',
     DAY_VOTE_RESULT: '投票结果公示',
     GAME_OVER: '游戏结束'
 })[phase.value]);
@@ -209,7 +212,7 @@ const phaseDescription = computed(() => {
         return '你昨夜被淘汰。请先完成发言，之后点击“入土为安”进入讨论与投票。';
     }
     if (currentPlayer.value && !currentPlayer.value.isAlive) return '你已被淘汰，请等待本局游戏结束。';
-    if (phase.value === 'DAY_VOTE' && currentPlayer.value?.isSilenced) {
+    if (['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value) && currentPlayer.value?.isSilenced) {
         return '你已使用免死金牌，继续存活；此后永久失去发言和投票权。';
     }
     if (phase.value === 'ROLE_REVEAL') return '请查看你的角色信息，确认后点击“准备就绪”。';
@@ -230,16 +233,22 @@ const phaseDescription = computed(() => {
             : '预言家查验中，请等待预言家完成行动。';
     }
     if (phase.value === 'DAY_VOTE') return '请选择一位玩家投票，或不选择目标直接确认弃权。投票内容不会公开。';
+    if (phase.value === 'DAY_VOTE_RUNOFF') return '最高票出现平票。请仅在下方平票候选人中重新投票，或确认弃权。';
     return '本局游戏已结束。';
 });
 const aliveTargets = computed(() => players.value.filter(player => player.isAlive && !player.isMe));
+const voteTargets = computed(() => phase.value === 'DAY_VOTE_RUNOFF'
+    ? aliveTargets.value.filter(player => runoffCandidateIds.value.includes(player.id))
+    : aliveTargets.value
+);
 const canStartGame = computed(() =>
     isHost.value && !roomStarted.value && players.value.length >= MIN_PLAYERS
 );
 const phaseReadyPlayers = computed(() => players.value.filter(player =>
     player.isConnected
     && (phase.value === 'DAY_VOTE_RESULT'
-        || (player.isAlive && (phase.value !== 'DAY_VOTE' || !player.isSilenced)))
+        || (player.isAlive
+            && (!['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value) || !player.isSilenced)))
 ));
 const readyPlayerCount = computed(() => phaseReadyPlayers.value.filter(player => player.isReady).length);
 const connectedPlayerCount = computed(() => phaseReadyPlayers.value.length);
@@ -276,11 +285,13 @@ const canConfirmPhase = computed(() => {
         && nightEliminatedPlayerIds.value.includes(player.id)
     ) return true;
     if (!player?.isAlive) return false;
-    if (phase.value === 'DAY_VOTE' && player.isSilenced) return false;
+    if (['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value) && player.isSilenced) return false;
     if (phase.value === 'NIGHT_WEREWOLF') return player.role === 'werewolf';
     if (phase.value === 'NIGHT_WITCH') return player.role === 'witch';
     if (phase.value === 'NIGHT_SEER') return player.role === 'seer';
-    return phase.value === 'ROLE_REVEAL' || phase.value === 'DAY_VOTE';
+    return phase.value === 'ROLE_REVEAL'
+        || phase.value === 'DAY_VOTE'
+        || phase.value === 'DAY_VOTE_RUNOFF';
 });
 const phaseStatusMessages: Partial<Record<GamePhase, string>> = {
     NIGHT_WEREWOLF: '狼人行动中',
@@ -326,6 +337,7 @@ function isGamePhase(value: unknown): value is ActiveGamePhase {
         || value === 'NIGHT_SEER'
         || value === 'DAY_DEATH_SPEECH'
         || value === 'DAY_VOTE'
+        || value === 'DAY_VOTE_RUNOFF'
         || value === 'DAY_VOTE_RESULT'
         || value === 'GAME_OVER';
 }
@@ -483,6 +495,8 @@ function parseServerMessage(value: unknown): ServerMessage | null {
         && (value.selectedPoisonTargetId === null || typeof value.selectedPoisonTargetId === 'string')
         && (value.selectedSeerTargetId === null || typeof value.selectedSeerTargetId === 'string')
         && (value.selectedVoteTargetId === null || typeof value.selectedVoteTargetId === 'string')
+        && Array.isArray(value.runoffCandidateIds)
+        && value.runoffCandidateIds.every(id => typeof id === 'string')
     ) {
         return {
             type: 'game-progress',
@@ -507,7 +521,8 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             selectedSaveTargetId: value.selectedSaveTargetId,
             selectedPoisonTargetId: value.selectedPoisonTargetId,
             selectedSeerTargetId: value.selectedSeerTargetId,
-            selectedVoteTargetId: value.selectedVoteTargetId
+            selectedVoteTargetId: value.selectedVoteTargetId,
+            runoffCandidateIds: value.runoffCandidateIds
         };
     }
     if (
@@ -645,6 +660,7 @@ function handleRoomMessage(message: ServerMessage): void {
         selectedPoisonTargetId.value = null;
         selectedSeerTargetId.value = null;
         selectedVoteTargetId.value = null;
+        runoffCandidateIds.value = [];
         roomError.value = '';
         void addLog('你已退出房间。');
         return;
@@ -706,6 +722,7 @@ function handleRoomMessage(message: ServerMessage): void {
         selectedPoisonTargetId.value = message.selectedPoisonTargetId;
         selectedSeerTargetId.value = message.selectedSeerTargetId;
         selectedVoteTargetId.value = message.selectedVoteTargetId;
+        runoffCandidateIds.value = message.runoffCandidateIds;
         voteResults.value = message.voteResults;
         roundWinner.value = message.roundWinner;
         hunterShotPending.value = message.hunterShotPending;
@@ -720,6 +737,7 @@ function handleRoomMessage(message: ServerMessage): void {
                 NIGHT_SEER: '进入预言家查验阶段。',
                 DAY_DEATH_SPEECH: '天亮了，昨夜淘汰的玩家开始发言。',
                 DAY_VOTE: '进入讨论与投票阶段。',
+                DAY_VOTE_RUNOFF: '最高票出现平票，进入加赛投票。',
                 DAY_VOTE_RESULT: '本轮投票结束，现公布投票结果。',
                 GAME_OVER: '本局游戏结束。'
             })[message.phase]);
@@ -905,7 +923,9 @@ function selectSeerTarget(player: Player): void {
 }
 
 function selectVoteTarget(player: Player): void {
-    if (!canChooseAction.value || phase.value !== 'DAY_VOTE' || currentPlayer.value?.isSilenced) return;
+    if (!canChooseAction.value
+        || !['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value)
+        || currentPlayer.value?.isSilenced) return;
     selectedVoteTargetId.value = player.id;
     sendRoomMessage({ type: 'game-action', action: 'vote', targetId: player.id });
 }
@@ -1248,15 +1268,22 @@ onUnmounted(() => {
                             </Message>
                         </div>
                         <Message
-                            v-else-if="phase === 'DAY_VOTE' && currentPlayer?.isAlive && currentPlayer.isSilenced"
+                            v-else-if="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && currentPlayer?.isAlive && currentPlayer.isSilenced"
                             severity="warn"
                             :closable="false"
                         >
                             你已使用免死金牌，继续存活；此后永久失去发言和投票权。
                         </Message>
-                        <div v-else-if="phase === 'DAY_VOTE' && currentPlayer?.isAlive" class="action-row">
+                        <Message
+                            v-else-if="phase === 'DAY_VOTE_RUNOFF' && currentPlayer?.isAlive"
+                            severity="warn"
+                            :closable="false"
+                        >
+                            平票加赛：本轮只能在平票候选人中选择。
+                        </Message>
+                        <div v-if="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && currentPlayer?.isAlive && !currentPlayer.isSilenced" class="action-row">
                             <Button
-                                v-for="player in aliveTargets"
+                                v-for="player in voteTargets"
                                 :key="player.id"
                                 :label="`投票给 [${player.name}]`"
                                 icon="pi pi-check"
@@ -1274,12 +1301,12 @@ onUnmounted(() => {
                         <div v-else-if="!canConfirmPhase && phaseStatusMessage" class="ready-check phase-status">
                             {{ phaseStatusMessage }}
                         </div>
-                        <div v-else-if="['DAY_VOTE', 'DAY_VOTE_RESULT'].includes(phase)" class="ready-check">
+                        <div v-else-if="['DAY_VOTE', 'DAY_VOTE_RUNOFF', 'DAY_VOTE_RESULT'].includes(phase)" class="ready-check">
                             已准备 {{ readyPlayerCount }} / {{ connectedPlayerCount }} 位在线玩家
                         </div>
                         <div v-if="phase !== 'GAME_OVER' && canConfirmPhase" class="action-row">
                             <Button
-                                :label="phase === 'DAY_VOTE' && !selectedVoteTargetId && !currentPlayer?.isReady
+                                :label="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && !selectedVoteTargetId && !currentPlayer?.isReady
                                     ? '确认弃权'
                                     : readyButtonLabel"
                                 :icon="phase === 'DAY_DEATH_SPEECH'

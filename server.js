@@ -31,7 +31,7 @@ function phaseParticipants(room) {
             && player.socket?.readyState === WebSocket.OPEN
         );
     }
-    if (room.phase === 'DAY_VOTE') {
+    if (room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF') {
         return livingOnlinePlayers.filter(player =>
             !room.gamePlayers.find(candidate => candidate.id === player.id)?.isSilenced
         );
@@ -143,7 +143,7 @@ function gameProgressFor(room, client, isSpectator = false) {
             isAlive: player.isAlive,
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
             isSilenced: player.isSilenced,
-            isReady: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(room.phase)
+            isReady: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RUNOFF', 'DAY_VOTE_RESULT'].includes(room.phase)
                 && room.readyPlayerIds.has(player.id)
         };
     });
@@ -153,7 +153,7 @@ function gameProgressFor(room, client, isSpectator = false) {
         players: publicPlayers,
         roleCounts: room.roleCounts,
         wolfIntentions,
-        readyPlayerIds: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(room.phase)
+        readyPlayerIds: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RUNOFF', 'DAY_VOTE_RESULT'].includes(room.phase)
             ? [...room.readyPlayerIds]
             : [],
         countdownSeconds: room.countdownSeconds,
@@ -176,7 +176,8 @@ function gameProgressFor(room, client, isSpectator = false) {
         selectedSaveTargetId: !isSpectator && gamePlayer?.role === 'witch' ? room.witchSaveTargetId : null,
         selectedPoisonTargetId: !isSpectator && gamePlayer?.role === 'witch' ? room.witchPoisonTargetId : null,
         selectedSeerTargetId: !isSpectator && gamePlayer?.role === 'seer' ? room.seerTargetId : null,
-        selectedVoteTargetId: !isSpectator ? room.votes.get(client.id) ?? null : null
+        selectedVoteTargetId: !isSpectator ? room.votes.get(client.id) ?? null : null,
+        runoffCandidateIds: room.runoffCandidateIds ?? []
     };
     return message;
 }
@@ -215,7 +216,7 @@ function phaseActionsComplete(room) {
     if (room.phase === 'NIGHT_WEREWOLF') {
         return Boolean(unanimousWolfTarget(room));
     }
-    if (room.phase === 'DAY_VOTE') {
+    if (room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF') {
         return phaseParticipants(room).every(player => room.votes.has(player.id));
     }
     if (room.phase === 'DAY_VOTE_RESULT') return !room.hunterShotPending;
@@ -258,7 +259,7 @@ function winnerFor(room) {
     return null;
 }
 
-function resolveRound(room) {
+function resolveRound(room, isRunoff = false) {
     const eliminatedIds = new Set(room.nightEliminatedPlayerIds);
     const voteCandidates = room.gamePlayers.filter(player => player.isAlive);
     const votersByTarget = new Map();
@@ -285,6 +286,24 @@ function resolveRound(room) {
     );
     const highestVoteCount = Math.max(0, ...voteCounts.values());
     const voteWinners = [...voteCounts.entries()].filter(([, count]) => count === highestVoteCount);
+    if (!isRunoff && voteWinners.length > 1 && highestVoteCount > 0) {
+        room.runoffCandidateIds = voteWinners.map(([playerId]) => playerId);
+        room.votes.clear();
+        room.readyPlayerIds.clear();
+        room.gamePlayers.forEach(player => {
+            player.isReady = false;
+        });
+        room.phase = 'DAY_VOTE_RUNOFF';
+        const tiedNames = room.gamePlayers
+            .filter(player => room.runoffCandidateIds.includes(player.id))
+            .map(player => player.name);
+        broadcastRoomEvent(room, {
+            playerId: null,
+            text: `最高票出现平票（${tiedNames.join('、')}），进入加赛投票。请所有有投票权的存活玩家仅在平票玩家中重新投票。`
+        });
+        broadcastGameProgress(room);
+        return;
+    }
     const voteEliminatedIds = new Set();
     if (voteWinners.length === 1 && highestVoteCount > 0) {
         voteEliminatedIds.add(voteWinners[0][0]);
@@ -339,7 +358,8 @@ function resolveRound(room) {
         .join('，');
     const result = voteEliminatedNames.length > 0
         ? `投票结果公示：${voteSummary}。投票淘汰：${voteEliminatedNames.join('、')}。`
-        : `投票结果公示：${voteSummary || '无人得票'}。投票平票或无人得票，本轮无人因投票淘汰。`;
+        : `投票结果公示：${voteSummary || '无人得票'}。${isRunoff ? '加赛仍为平票或无人得票，本轮无人因投票淘汰。' : '无人得票，本轮无人因投票淘汰。'}`;
+    room.runoffCandidateIds = [];
     broadcastRoomEvent(room, { playerId: null, text: result });
     if (idiotUsedImmunity) {
         broadcastRoomEvent(room, {
@@ -413,6 +433,10 @@ function advanceGamePhase(room) {
         resolveRound(room);
         return;
     }
+    if (room.phase === 'DAY_VOTE_RUNOFF') {
+        resolveRound(room, true);
+        return;
+    }
     if (room.phase === 'DAY_VOTE_RESULT') {
         if (room.roundWinner) {
             room.phase = 'GAME_OVER';
@@ -428,6 +452,7 @@ function advanceGamePhase(room) {
         room.phase = 'NIGHT_WEREWOLF';
         room.roundWinner = null;
         room.voteResults = [];
+        room.runoffCandidateIds = [];
         room.hunterId = null;
         room.hunterShotPending = false;
         room.hunterShotTargetId = null;
@@ -660,6 +685,7 @@ function beginGame(room, initiator) {
     room.seerResult = null;
     room.votes = new Map();
     room.voteResults = [];
+    room.runoffCandidateIds = [];
     room.roundWinner = null;
     room.hunterId = null;
     room.hunterShotPending = false;
@@ -880,7 +906,7 @@ function handleMessage(client, message) {
             sendError(client, '淘汰玩家不能提交准备状态。');
             return;
         }
-        if (message.isReady && room.phase === 'DAY_VOTE' && gamePlayer.isSilenced) {
+        if (message.isReady && ['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(room.phase) && gamePlayer.isSilenced) {
             sendError(client, '你已失去投票权。');
             return;
         }
@@ -906,7 +932,7 @@ function handleMessage(client, message) {
             sendError(client, '请等待所有在线狼人统一袭击目标后再确认。');
             return;
         }
-        if (message.isReady && room.phase === 'DAY_VOTE' && !room.votes.has(client.id)) {
+        if (message.isReady && ['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(room.phase) && !room.votes.has(client.id)) {
             room.votes.set(client.id, null);
         }
         updateReadiness(room, client, message.isReady);
@@ -1048,13 +1074,18 @@ function handleMessage(client, message) {
             room.seerTargetId = targetId;
             room.seerResult = room.gamePlayers.find(player => player.id === targetId)?.role ?? null;
         } else if (action === 'vote') {
-            if (room.phase !== 'DAY_VOTE' || gamePlayer.isSilenced
+            const isVotingPhase = room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF';
+            const targetIsEligibleForRunoff = room.phase !== 'DAY_VOTE_RUNOFF'
+                || room.runoffCandidateIds?.includes(targetId);
+            if (!isVotingPhase || gamePlayer.isSilenced || !targetIsEligibleForRunoff
                 || !validLivingTarget(room, targetId) || targetId === client.id) {
-                if (room.phase === 'DAY_VOTE' && gamePlayer.isSilenced) {
+                if (isVotingPhase && gamePlayer.isSilenced) {
                     sendError(client, '你已失去投票权。');
                     return;
                 }
-                sendError(client, '投票目标无效。');
+                sendError(client, room.phase === 'DAY_VOTE_RUNOFF'
+                    ? '加赛只能投票给平票候选人。'
+                    : '投票目标无效。');
                 return;
             }
             room.votes.set(client.id, targetId);
