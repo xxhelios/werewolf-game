@@ -436,21 +436,7 @@ function handleRoomMessage(message: ServerMessage): void {
             const action = pendingLobbyAction;
             pendingLobbyAction = null;
             if (message.playerId !== requestedPlayerId) {
-                playerId.value = requestedPlayerId;
-                playerIdInput.value = requestedPlayerId;
-                try {
-                    localStorage.setItem(PLAYER_ID_STORAGE_KEY, requestedPlayerId);
-                } catch (error) {
-                    console.error('Unable to restore requested player identity.', error);
-                }
-                if (roomConnection) {
-                    roomConnection.onclose = null;
-                    roomConnection.close();
-                    roomConnection = null;
-                }
-                connectionState.value = 'disconnected';
-                setRoomError('服务器返回的玩家 ID 与输入的 ID 不同，请确认 ID 后重试。');
-                return;
+                addLog('服务器无法使用输入的玩家 ID，已分配新的玩家 ID。');
             }
             if (message.resumedRoom && action.type === 'join-room') {
                 return;
