@@ -7,6 +7,7 @@ const { WebSocket, WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 12;
+const ROOM_CODE_LENGTH = 4;
 const READY_COUNTDOWN_SECONDS = 5;
 const HIDDEN_ACTION_DELAY_MIN_SECONDS = 5;
 const HIDDEN_ACTION_DELAY_MAX_SECONDS = 10;
@@ -54,8 +55,8 @@ function sendError(client, message) {
 function createRoomCode(requestedCode = '') {
     if (requestedCode) {
         const code = requestedCode.trim().toUpperCase();
-        if (!/^[A-Z0-9]{6}$/.test(code)) {
-            return { error: '自定义房间码必须是 6 位字母或数字。' };
+        if (!/^[A-Z0-9]{4}$/.test(code)) {
+            return { error: '自定义房间码必须是 4 位字母或数字。' };
         }
         if (rooms.has(code)) {
             return { error: '这个房间码已被使用，请换一个。' };
@@ -65,7 +66,7 @@ function createRoomCode(requestedCode = '') {
 
     let code;
     do {
-        code = Array.from({ length: 6 }, () =>
+        code = Array.from({ length: ROOM_CODE_LENGTH }, () =>
             CODE_CHARACTERS[crypto.randomInt(CODE_CHARACTERS.length)]
         ).join('');
     } while (rooms.has(code));
@@ -740,8 +741,8 @@ function handleMessage(client, message) {
             return;
         }
         const code = typeof message.code === 'string' ? message.code.trim().toUpperCase() : '';
-        if (!/^[A-Z0-9]{6}$/.test(code)) {
-            sendError(client, '请输入有效的 6 位房间码。');
+        if (!/^[A-Z0-9]{4}$/.test(code)) {
+            sendError(client, '请输入有效的 4 位房间码。');
             return;
         }
         const room = rooms.get(code);
@@ -808,8 +809,8 @@ function handleMessage(client, message) {
             sendError(client, '昵称需为 1-24 个字符。');
             return;
         }
-        if (!/^[A-Z0-9]{6}$/.test(code)) {
-            sendError(client, '请输入有效的 6 位房间码。');
+        if (!/^[A-Z0-9]{4}$/.test(code)) {
+            sendError(client, '请输入有效的 4 位房间码。');
             return;
         }
         const room = rooms.get(code);
@@ -1230,7 +1231,7 @@ webSocketServer.on('connection', (socket, request) => {
     const isValidPlayerId = typeof requestedPlayerId === 'string'
         && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedPlayerId);
     const isValidRoomCode = typeof requestedRoomCode === 'string'
-        && /^[A-Z0-9]{6}$/.test(requestedRoomCode);
+        && /^[A-Z0-9]{4}$/.test(requestedRoomCode);
     const existingPlayer = isValidPlayerId && isValidRoomCode
         ? playerInRoom(requestedPlayerId, requestedRoomCode)
         : null;

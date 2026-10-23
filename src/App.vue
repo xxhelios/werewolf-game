@@ -17,7 +17,7 @@ const appVersion = __APP_VERSION__;
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 12;
 const MAX_MEMO_ENTRIES = 200;
-const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
+const ROOM_CODE_PATTERN = /^[A-Z0-9]{4}$/;
 const PLAYER_ID_STORAGE_KEY = 'werewolf-player-id';
 const ROOM_CODE_STORAGE_KEY = 'werewolf-room-code';
 const PLAYER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -317,7 +317,7 @@ function createRoom(): void {
     if (!name) return;
     const code = createRoomCodeInput.value.trim().toUpperCase();
     if (code && !ROOM_CODE_PATTERN.test(code)) {
-        setRoomError('自定义房间码需为 6 位字母或数字；留空则自动生成。');
+        setRoomError('自定义房间码需为 4 位字母或数字；留空则自动生成。');
         return;
     }
     setRoomError('');
@@ -329,7 +329,7 @@ function joinRoom(): void {
     const code = roomCodeInput.value.trim().toUpperCase();
     if (!name) return;
     if (!ROOM_CODE_PATTERN.test(code)) {
-        setRoomError('请输入有效的 6 位房间码。');
+        setRoomError('请输入有效的 4 位房间码。');
         return;
     }
     setRoomError('');
@@ -339,7 +339,7 @@ function joinRoom(): void {
 function spectateRoom(): void {
     const code = roomCodeInput.value.trim().toUpperCase();
     if (!ROOM_CODE_PATTERN.test(code)) {
-        setRoomError('请输入有效的 6 位房间码。');
+        setRoomError('请输入有效的 4 位房间码。');
         return;
     }
     setRoomError('');
@@ -701,10 +701,10 @@ function toggleReady(): void {
 }
 
 watch(roomCodeInput, value => {
-    roomCodeInput.value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    roomCodeInput.value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
 });
 watch(createRoomCodeInput, value => {
-    createRoomCodeInput.value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    createRoomCodeInput.value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
 });
 
 onMounted(() => {
@@ -771,7 +771,7 @@ onUnmounted(() => {
                                 <InputText
                                     id="create-room-code"
                                     v-model="createRoomCodeInput"
-                                    maxlength="6"
+                                    maxlength="4"
                                     placeholder="留空则自动生成"
                                     class="full-width room-code-input"
                                     @keyup.enter="createRoom"
@@ -783,8 +783,8 @@ onUnmounted(() => {
                         <div class="join-form">
                             <InputText
                                 v-model="roomCodeInput"
-                                maxlength="6"
-                                placeholder="输入 6 位房间码"
+                                maxlength="4"
+                                placeholder="输入 4 位房间码"
                                 aria-label="房间码"
                                 @keyup.enter="joinRoom"
                             />
