@@ -1,5 +1,5 @@
 import { ROLE_INFO } from '../types';
-import type { ActiveGamePhase, Role, RoleCounts, VoteResult, WitchPotions } from '../types';
+import type { ActiveGamePhase, LoverInfo, Role, RoleCounts, VoteResult, WitchPotions } from '../types';
 
 export interface RoomPlayer {
     id: string;
@@ -13,8 +13,8 @@ export interface GamePlayer {
     name: string;
     role: Role | 'unassigned';
     isAlive: boolean;
+    diedForLove: boolean;
     isConnected: boolean;
-    isSilenced: boolean;
     isReady: boolean;
 }
 
@@ -63,6 +63,10 @@ export type ServerMessage =
         selectedSeerTargetId: string | null;
         selectedVoteTargetId: string | null;
         runoffCandidateIds: string[];
+        lover: LoverInfo | null;
+        loverNotice: string | null;
+        loverDecisionPending: boolean;
+        loverCanDecide: boolean;
     }
     | { type: 'player-connection'; playerId: string; isConnected: boolean }
     | { type: 'room-event'; playerId: string | null; text: string }
@@ -73,6 +77,7 @@ function isGamePhase(value: unknown): value is ActiveGamePhase {
         || value === 'NIGHT_WEREWOLF'
         || value === 'NIGHT_WITCH'
         || value === 'NIGHT_SEER'
+        || value === 'NIGHT_LOVER'
         || value === 'DAY_DEATH_SPEECH'
         || value === 'DAY_VOTE'
         || value === 'DAY_VOTE_RUNOFF'
@@ -107,8 +112,21 @@ function isRole(value: unknown): value is Role {
         || value === 'seer'
         || value === 'witch'
         || value === 'hunter'
-        || value === 'idiot'
+        || value === 'lover'
         || value === 'villager';
+}
+
+function isLoverInfo(value: unknown): value is LoverInfo {
+    return isRecord(value)
+        && typeof value.nightNumber === 'number'
+        && (value.targetId === null || typeof value.targetId === 'string')
+        && isNullableRole(value.targetRole)
+        && typeof value.targetAlive === 'boolean'
+        && typeof value.targetInDanger === 'boolean'
+        && (value.choice === null
+            || value.choice === 'substitute'
+            || value.choice === 'convert'
+            || value.choice === 'abstain');
 }
 
 function isWitchPotions(value: unknown): value is WitchPotions {
@@ -137,7 +155,7 @@ function isVoteResultList(value: unknown): value is VoteResult[] {
         && result.voterIds.every(id => typeof id === 'string')
         && typeof result.eliminated === 'boolean'
         && typeof result.hunterShot === 'boolean'
-        && typeof result.idiotSaved === 'boolean'
+        && typeof result.loverSubstituted === 'boolean'
     );
 }
 
@@ -158,8 +176,8 @@ function isGamePlayerList(value: unknown): value is GamePlayer[] {
         && typeof player.name === 'string'
         && (player.role === 'unassigned' || isRole(player.role))
         && typeof player.isAlive === 'boolean'
+        && typeof player.diedForLove === 'boolean'
         && typeof player.isConnected === 'boolean'
-        && typeof player.isSilenced === 'boolean'
         && typeof player.isReady === 'boolean'
     );
 }
@@ -263,6 +281,10 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
         && (value.selectedVoteTargetId === null || typeof value.selectedVoteTargetId === 'string')
         && Array.isArray(value.runoffCandidateIds)
         && value.runoffCandidateIds.every(id => typeof id === 'string')
+        && (value.lover === null || isLoverInfo(value.lover))
+        && (value.loverNotice === null || typeof value.loverNotice === 'string')
+        && typeof value.loverDecisionPending === 'boolean'
+        && typeof value.loverCanDecide === 'boolean'
     ) {
         return {
             type: 'game-progress',
@@ -288,7 +310,11 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
             selectedPoisonTargetId: value.selectedPoisonTargetId,
             selectedSeerTargetId: value.selectedSeerTargetId,
             selectedVoteTargetId: value.selectedVoteTargetId,
-            runoffCandidateIds: value.runoffCandidateIds
+            runoffCandidateIds: value.runoffCandidateIds,
+            lover: value.lover,
+            loverNotice: value.loverNotice,
+            loverDecisionPending: value.loverDecisionPending,
+            loverCanDecide: value.loverCanDecide
         };
     }
     if (

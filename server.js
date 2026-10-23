@@ -53,14 +53,13 @@ function phaseParticipants(room) {
         );
     }
     if (room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF') {
-        return livingOnlinePlayers.filter(player =>
-            !room.gamePlayers.find(candidate => candidate.id === player.id)?.isSilenced
-        );
+        return livingOnlinePlayers;
     }
     const actingRole = {
         NIGHT_WEREWOLF: 'werewolf',
         NIGHT_WITCH: 'witch',
-        NIGHT_SEER: 'seer'
+        NIGHT_SEER: 'seer',
+        NIGHT_LOVER: 'lover'
     }[room.phase];
     if (!actingRole) return livingOnlinePlayers;
     return livingOnlinePlayers.filter(player =>
@@ -162,15 +161,29 @@ function gameProgressFor(room, client, isSpectator = false) {
                 ? player.role
                 : 'unassigned',
             isAlive: player.isAlive,
+            diedForLove: Boolean(player.diedForLove),
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
-            isSilenced: player.isSilenced,
             isReady: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RUNOFF', 'DAY_VOTE_RESULT'].includes(room.phase)
                 && room.readyPlayerIds.has(player.id)
         };
     });
+    const loverTarget = room.gamePlayers.find(player => player.id === room.loverTargetId);
     const message = {
         type: 'game-progress',
         phase: room.phase,
+        lover: !isSpectator && gamePlayer?.role === 'lover'
+            ? {
+                nightNumber: room.nightNumber,
+                targetId: room.loverTargetId,
+                targetRole: loverTarget?.role ?? null,
+                targetAlive: Boolean(loverTarget?.isAlive),
+                targetInDanger: room.phase === 'NIGHT_LOVER' && loverTargetInDanger(room),
+                choice: room.loverChoice
+            }
+            : null,
+        loverNotice: !isSpectator ? loverNoticeFor(room, client.id) : null,
+        loverDecisionPending: Boolean(room.loverDecisionPending),
+        loverCanDecide: !isSpectator && canLoverDecide(room, client.id),
         players: publicPlayers,
         roleCounts: room.roleCounts,
         wolfIntentions,
@@ -240,7 +253,8 @@ function phaseActionsComplete(room) {
     if (room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF') {
         return phaseParticipants(room).every(player => room.votes.has(player.id));
     }
-    if (room.phase === 'DAY_VOTE_RESULT') return !room.hunterShotPending;
+    if (room.phase === 'NIGHT_LOVER') return loverActionComplete(room);
+    if (room.phase === 'DAY_VOTE_RESULT') return !room.hunterShotPending && !room.loverDecisionPending;
     if (room.phase === 'GAME_OVER') return false;
     return true;
 }
@@ -269,6 +283,43 @@ function calculateWolfTarget(room) {
 function validLivingTarget(room, targetId) {
     return typeof targetId === 'string'
         && room.gamePlayers.some(player => player.id === targetId && player.isAlive);
+}
+
+function loverOptions(room) {
+    const target = room.gamePlayers.find(player => player.id === room.loverTargetId && player.isAlive);
+    if (!target) return { canSubstitute: false, canConvert: false };
+    return {
+        canSubstitute: loverTargetInDanger(room),
+        canConvert: target.role === 'werewolf'
+    };
+}
+
+function loverTargetInDanger(room) {
+    const target = room.gamePlayers.find(player => player.id === room.loverTargetId && player.isAlive);
+    if (!target) return false;
+    const attacked = room.wolfTargetId === target.id && room.witchSaveTargetId !== target.id;
+    return attacked || room.witchPoisonTargetId === target.id;
+}
+
+function loverActionComplete(room) {
+    if (phaseParticipants(room).length === 0) return true;
+    if (room.nightNumber === 1) return room.loverTargetId !== null;
+    const { canSubstitute, canConvert } = loverOptions(room);
+    return room.loverChoice !== null || (!canSubstitute && !canConvert);
+}
+
+function loverNoticeFor(room, clientId) {
+    if (clientId === room.loverTargetId && room.loverConvertedId === clientId) {
+        return '恋爱脑的爱的感化让你放下了獠牙，你现在是一名平民。';
+    }
+    if (clientId === room.loverId && room.loverReverted) {
+        return '你已不再是恋爱脑，现在是一名普通平民。';
+    }
+    const lover = room.gamePlayers?.find(player => player.id === room.loverId);
+    if (clientId === room.loverTargetId && lover?.isAlive && !room.loverReverted) {
+        return '有人对你暗送秋波。';
+    }
+    return null;
 }
 
 function winnerFor(room) {
@@ -300,7 +351,7 @@ function resolveRound(room, isRunoff = false) {
         votes: votersByTarget.get(player.id)?.length || 0,
         eliminated: false,
         hunterShot: false,
-        idiotSaved: false
+        loverSubstituted: false
     }));
     const voteCounts = new Map(
         room.voteResults.map(result => [result.targetId, result.votes])
@@ -330,15 +381,6 @@ function resolveRound(room, isRunoff = false) {
         voteEliminatedIds.add(voteWinners[0][0]);
         eliminatedIds.add(voteWinners[0][0]);
     }
-    const votedOutPlayer = room.gamePlayers.find(player => voteEliminatedIds.has(player.id));
-    const idiotUsedImmunity = votedOutPlayer?.role === 'idiot' && !votedOutPlayer.isSilenced;
-    if (idiotUsedImmunity) {
-        votedOutPlayer.isSilenced = true;
-        voteEliminatedIds.delete(votedOutPlayer.id);
-        eliminatedIds.delete(votedOutPlayer.id);
-        const voteResult = room.voteResults.find(result => result.targetId === votedOutPlayer.id);
-        if (voteResult) voteResult.idiotSaved = true;
-    }
     room.voteResults.forEach(result => {
         result.eliminated = voteEliminatedIds.has(result.targetId);
     });
@@ -347,16 +389,25 @@ function resolveRound(room, isRunoff = false) {
     room.gamePlayers.forEach(player => {
         if (voteEliminatedIds.has(player.id)) player.isAlive = false;
     });
+    const loverForDecision = room.gamePlayers.find(player => player.id === room.loverId && player.isAlive);
+    room.loverDecisionPending = Boolean(
+        loverForDecision
+        && room.nightNumber === 1
+        && !room.loverReverted
+        && room.loverTargetId
+        && voteEliminatedIds.has(room.loverTargetId)
+    );
     const eliminatedHunter = room.gamePlayers.find(player =>
         voteEliminatedIds.has(player.id) && player.role === 'hunter'
     );
     room.hunterId = eliminatedHunter?.id ?? null;
-    room.hunterShotPending = Boolean(eliminatedHunter);
+    room.hunterShotPending = Boolean(eliminatedHunter)
+        && !(room.loverDecisionPending && eliminatedHunter.id === room.loverTargetId);
     room.hunterShotTargetId = null;
     const voteEliminatedNames = room.gamePlayers
         .filter(player => voteEliminatedIds.has(player.id))
         .map(player => player.name);
-    room.roundWinner = room.hunterShotPending ? null : winnerFor(room);
+    room.roundWinner = room.hunterShotPending || room.loverDecisionPending ? null : winnerFor(room);
     room.phase = 'DAY_VOTE_RESULT';
     clearHiddenActionDelay(room);
     room.readyPlayerIds.clear();
@@ -382,21 +433,91 @@ function resolveRound(room, isRunoff = false) {
         : `投票结果公示：${voteSummary || '无人得票'}。${isRunoff ? '加赛仍为平票或无人得票，本轮无人因投票淘汰。' : '无人得票，本轮无人因投票淘汰。'}`;
     room.runoffCandidateIds = [];
     broadcastRoomEvent(room, { playerId: null, text: result });
-    if (idiotUsedImmunity) {
+    if (room.loverDecisionPending) {
         broadcastRoomEvent(room, {
             playerId: null,
-            text: `${votedOutPlayer.name} 使用免死金牌，继续存活，但永久失去发言和投票权。`
+            text: '恋爱脑正在抉择是否为心动对象赴死。'
         });
-    }
-    if (room.hunterShotPending) {
+    } else if (room.hunterShotPending) {
         broadcastRoomEvent(room, {
             playerId: null,
             text: `${eliminatedHunter.name}（猎人）被投票出局，可以选择开枪带走一名玩家。`
         });
     }
     if (room.roundWinner) broadcastRoomEvent(room, { playerId: null, text: `游戏结束：${room.roundWinner}！` });
-    else broadcastRoomEvent(room, { playerId: null, text: '确认投票结果后，游戏将继续进入下一轮。' });
+    else if (!room.loverDecisionPending) broadcastRoomEvent(room, { playerId: null, text: '确认投票结果后，游戏将继续进入下一轮。' });
     broadcastGameProgress(room);
+}
+
+function canLoverDecide(room, clientId) {
+    return room.phase === 'DAY_VOTE_RESULT'
+        && room.loverDecisionPending === true
+        && room.loverId === clientId
+        && Boolean(room.gamePlayers.find(player => player.id === clientId)?.isAlive);
+}
+
+function resolveLoverDecision(room, client, substitute) {
+    const lover = room.gamePlayers.find(player => player.id === client.id);
+    const target = room.gamePlayers.find(player => player.id === room.loverTargetId);
+    room.loverDecisionPending = false;
+    room.readyPlayerIds.clear();
+    room.gamePlayers.forEach(player => {
+        player.isReady = false;
+    });
+    const voteResult = room.voteResults.find(result => result.targetId === target.id);
+    if (substitute) {
+        target.isAlive = true;
+        lover.isAlive = false;
+        lover.diedForLove = true;
+        room.eliminatedPlayerIds = room.eliminatedPlayerIds.filter(id => id !== target.id);
+        room.eliminatedPlayerIds.push(lover.id);
+        if (voteResult) {
+            voteResult.eliminated = false;
+            voteResult.loverSubstituted = true;
+        }
+        if (room.hunterId === target.id) room.hunterId = null;
+        broadcastRoomEvent(room, {
+            playerId: lover.id,
+            text: `恋爱脑 ${lover.name} 为爱赴死，替 ${target.name} 承受了投票淘汰，${target.name} 继续存活${target.role === 'hunter' ? '，且不再有开枪资格' : ''}。`
+        });
+    } else {
+        broadcastRoomEvent(room, {
+            playerId: lover.id,
+            text: `恋爱脑 ${lover.name} 选择保持清醒，没有替死。`
+        });
+        if (room.hunterId === target.id) {
+            room.hunterShotPending = true;
+            broadcastRoomEvent(room, {
+                playerId: null,
+                text: `${target.name}（猎人）被投票出局，可以选择开枪带走一名玩家。`
+            });
+        }
+    }
+    room.roundWinner = room.hunterShotPending ? null : winnerFor(room);
+    if (room.roundWinner) broadcastRoomEvent(room, { playerId: null, text: `游戏结束：${room.roundWinner}！` });
+    else if (!room.hunterShotPending) broadcastRoomEvent(room, { playerId: null, text: '确认投票结果后，游戏将继续进入下一轮。' });
+    broadcastGameProgress(room);
+    startReadyCountdown(room);
+}
+
+function applyLoverChoice(room, eliminatedIds) {
+    if (room.nightNumber !== 2) return;
+    const lover = room.gamePlayers.find(player => player.id === room.loverId && player.isAlive);
+    if (!lover) return;
+    const target = room.gamePlayers.find(player => player.id === room.loverTargetId && player.isAlive);
+    const { canSubstitute, canConvert } = loverOptions(room);
+    if (target && room.loverChoice === 'substitute' && canSubstitute) {
+        eliminatedIds.delete(target.id);
+        eliminatedIds.add(lover.id);
+    } else if (target && room.loverChoice === 'convert' && canConvert) {
+        target.role = 'villager';
+        room.loverConvertedId = target.id;
+        eliminatedIds.add(lover.id);
+    }
+    if (!eliminatedIds.has(lover.id)) {
+        lover.role = 'villager';
+        room.loverReverted = true;
+    }
 }
 
 function resolveNight(room) {
@@ -419,6 +540,7 @@ function resolveNight(room) {
         eliminatedIds.add(room.wolfTargetId);
     }
     if (room.witchPoisonTargetId) eliminatedIds.add(room.witchPoisonTargetId);
+    applyLoverChoice(room, eliminatedIds);
     room.nightEliminatedPlayerIds = [...eliminatedIds];
     room.eliminatedPlayerIds = [...eliminatedIds];
     room.gamePlayers.forEach(player => {
@@ -471,6 +593,8 @@ function advanceGamePhase(room) {
 
         const hadEliminations = room.eliminatedPlayerIds.length > 0;
         room.phase = 'NIGHT_WEREWOLF';
+        room.nightNumber += 1;
+        room.loverChoice = null;
         room.roundWinner = null;
         room.voteResults = [];
         room.runoffCandidateIds = [];
@@ -491,7 +615,8 @@ function advanceGamePhase(room) {
         ROLE_REVEAL: 'NIGHT_WEREWOLF',
         NIGHT_WEREWOLF: 'NIGHT_WITCH',
         NIGHT_WITCH: 'NIGHT_SEER',
-        NIGHT_SEER: 'DAY_VOTE',
+        NIGHT_SEER: 'NIGHT_LOVER',
+        NIGHT_LOVER: 'DAY_VOTE',
         DAY_DEATH_SPEECH: 'DAY_VOTE'
     };
     if (!nextPhases[room.phase]) return;
@@ -499,8 +624,8 @@ function advanceGamePhase(room) {
         room.witchPotions.saveUsed = room.witchPotions.saveUsed || room.witchSaveTargetId !== null;
         room.witchPotions.poisonUsed = room.witchPotions.poisonUsed || room.witchPoisonTargetId !== null;
     }
-    const nightWinner = room.phase === 'NIGHT_SEER' ? resolveNight(room) : null;
-    const hasOnlineNightEliminations = room.phase === 'NIGHT_SEER'
+    const nightWinner = room.phase === 'NIGHT_LOVER' ? resolveNight(room) : null;
+    const hasOnlineNightEliminations = room.phase === 'NIGHT_LOVER'
         && room.nightEliminatedPlayerIds.some(id =>
             room.players.some(player =>
                 player.id === id && player.socket?.readyState === WebSocket.OPEN
@@ -523,6 +648,7 @@ function advanceGamePhase(room) {
             : ({
             NIGHT_WITCH: '狼人行动结束，进入女巫行动阶段。',
             NIGHT_SEER: '女巫行动结束，进入预言家查验阶段。',
+            NIGHT_LOVER: '预言家行动结束，进入恋爱脑行动阶段。',
             DAY_VOTE: '夜晚行动结束，进入讨论与投票阶段。',
             NIGHT_WEREWOLF: '夜幕降临，进入狼人行动阶段。'
         })[room.phase] || '游戏阶段已更新。'
@@ -615,11 +741,6 @@ function leaveRoom(client) {
         client.socket?.close();
         return;
     }
-    if (room.gamePlayers?.find(player => player.id === client.id)?.isSilenced) {
-        sendError(client, '你已失去发言权。');
-        return;
-    }
-
     clearReadyCountdown(room);
     room.readyPlayerIds?.delete(client.id);
     room.votes?.delete(client.id);
@@ -631,6 +752,10 @@ function leaveRoom(client) {
     room.nightEliminatedPlayerIds = (room.nightEliminatedPlayerIds || []).filter(id => id !== client.id);
     room.players = room.players.filter(player => player.id !== client.id);
     room.gamePlayers = room.gamePlayers?.filter(player => player.id !== client.id) ?? null;
+    if (room.loverDecisionPending && room.loverId === client.id) {
+        room.loverDecisionPending = false;
+        if (room.hunterId && room.hunterId === room.loverTargetId) room.hunterShotPending = true;
+    }
     if (room.hostId === client.id && room.players.length > 0) {
         room.hostId = room.players[0].id;
     }
@@ -667,14 +792,14 @@ function leaveRoom(client) {
 function shuffledRoles(playerCount) {
     const wolfCount = playerCount >= 12 ? 4 : playerCount >= 8 ? 3 : playerCount >= 6 ? 2 : 1;
     const hasHunter = playerCount >= 7;
-    const hasIdiot = playerCount >= 10;
+    const hasLover = playerCount >= 10;
     const roles = [
         ...Array(wolfCount).fill('werewolf'),
         'seer',
         'witch',
         ...(hasHunter ? ['hunter'] : []),
-        ...(hasIdiot ? ['idiot'] : []),
-        ...Array(playerCount - wolfCount - 2 - Number(hasHunter) - Number(hasIdiot)).fill('villager')
+        ...(hasLover ? ['lover'] : []),
+        ...Array(playerCount - wolfCount - 2 - Number(hasHunter) - Number(hasLover)).fill('villager')
     ];
     for (let i = roles.length - 1; i > 0; i -= 1) {
         const j = crypto.randomInt(i + 1);
@@ -689,7 +814,7 @@ function roleCountsFor(roles) {
         seer: 0,
         witch: 0,
         hunter: 0,
-        idiot: 0,
+        lover: 0,
         villager: 0
     };
     roles.forEach(role => {
@@ -720,6 +845,12 @@ function beginGame(room, initiator) {
     room.hunterShotTargetId = null;
     room.eliminatedPlayerIds = [];
     room.nightEliminatedPlayerIds = [];
+    room.nightNumber = 1;
+    room.loverTargetId = null;
+    room.loverChoice = null;
+    room.loverConvertedId = null;
+    room.loverReverted = false;
+    room.loverDecisionPending = false;
     const roles = shuffledRoles(room.players.length);
     room.roleCounts = roleCountsFor(roles);
     room.gamePlayers = room.players.map((player, index) => ({
@@ -727,10 +858,10 @@ function beginGame(room, initiator) {
         name: player.name,
         role: roles[index],
         isAlive: true,
-        isSilenced: false,
         isReady: false,
         isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
     }));
+    room.loverId = room.gamePlayers.find(player => player.role === 'lover')?.id ?? null;
     room.players.forEach(player => send(player, {
         type: 'game-started',
         phase: room.phase,
@@ -740,8 +871,8 @@ function beginGame(room, initiator) {
             name: gamePlayer.name,
             role: 'unassigned',
             isAlive: gamePlayer.isAlive,
+            diedForLove: false,
             isConnected: gamePlayer.isConnected,
-            isSilenced: gamePlayer.isSilenced,
             isReady: false
         }))
     }));
@@ -941,12 +1072,16 @@ function handleMessage(client, message) {
             sendError(client, '淘汰玩家不能提交准备状态。');
             return;
         }
-        if (message.isReady && ['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(room.phase) && gamePlayer.isSilenced) {
-            sendError(client, '你已失去投票权。');
-            return;
-        }
         if (message.isReady && !phaseParticipants(room).some(player => player.id === client.id)) {
             sendError(client, '当前阶段无需由你确认准备。');
+            return;
+        }
+        if (message.isReady && room.phase === 'DAY_VOTE_RESULT' && room.loverDecisionPending) {
+            sendError(client, '请等待恋爱脑做出抉择。');
+            return;
+        }
+        if (message.isReady && room.phase === 'NIGHT_LOVER' && !loverActionComplete(room)) {
+            sendError(client, room.nightNumber === 1 ? '请先选择心动对象。' : '请先做出选择。');
             return;
         }
         if (
@@ -988,6 +1123,14 @@ function handleMessage(client, message) {
         const { action, targetId } = message;
         if (typeof action !== 'string') {
             sendError(client, '行动类型无效。');
+            return;
+        }
+        if (action === 'lover-decision') {
+            if (!canLoverDecide(room, client.id) || typeof message.substitute !== 'boolean') {
+                sendError(client, '当前无法做出恋爱脑抉择。');
+                return;
+            }
+            resolveLoverDecision(room, client, message.substitute);
             return;
         }
         if (action === 'hunter-shot') {
@@ -1108,16 +1251,46 @@ function handleMessage(client, message) {
             }
             room.seerTargetId = targetId;
             room.seerResult = room.gamePlayers.find(player => player.id === targetId)?.role ?? null;
+        } else if (action === 'lover-target') {
+            if (room.phase !== 'NIGHT_LOVER' || gamePlayer.role !== 'lover' || room.nightNumber !== 1) {
+                sendError(client, '当前阶段不能选择心动对象。');
+                return;
+            }
+            if (room.loverTargetId !== null) {
+                sendError(client, '心动对象一旦选择便无法更改。');
+                return;
+            }
+            if (!validLivingTarget(room, targetId) || targetId === client.id) {
+                sendError(client, '心动对象无效。');
+                return;
+            }
+            room.loverTargetId = targetId;
+        } else if (action === 'lover-choice') {
+            if (room.phase !== 'NIGHT_LOVER' || gamePlayer.role !== 'lover' || room.nightNumber !== 2) {
+                sendError(client, '当前阶段不能做出恋爱脑选择。');
+                return;
+            }
+            if (room.loverChoice !== null) {
+                sendError(client, '你已经做出选择，无法更改。');
+                return;
+            }
+            const { canSubstitute, canConvert } = loverOptions(room);
+            const choice = message.choice;
+            if (
+                !['substitute', 'convert', 'abstain'].includes(choice)
+                || (choice === 'substitute' && !canSubstitute)
+                || (choice === 'convert' && !canConvert)
+            ) {
+                sendError(client, '该选项当前不可用。');
+                return;
+            }
+            room.loverChoice = choice;
         } else if (action === 'vote') {
             const isVotingPhase = room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF';
             const targetIsEligibleForRunoff = room.phase !== 'DAY_VOTE_RUNOFF'
                 || room.runoffCandidateIds?.includes(targetId);
-            if (!isVotingPhase || gamePlayer.isSilenced || !targetIsEligibleForRunoff
+            if (!isVotingPhase || !targetIsEligibleForRunoff
                 || !validLivingTarget(room, targetId) || targetId === client.id) {
-                if (isVotingPhase && gamePlayer.isSilenced) {
-                    sendError(client, '你已失去投票权。');
-                    return;
-                }
                 sendError(client, room.phase === 'DAY_VOTE_RUNOFF'
                     ? '加赛只能投票给平票候选人。'
                     : '投票目标无效。');
@@ -1308,8 +1481,8 @@ webSocketServer.on('connection', (socket, request) => {
                     name: player.name,
                     role: 'unassigned',
                     isAlive: player.isAlive,
+                    diedForLove: Boolean(player.diedForLove),
                     isConnected: player.isConnected,
-                    isSilenced: player.isSilenced,
                     isReady: existingPlayer.room.readyPlayerIds.has(player.id)
                 }))
             });

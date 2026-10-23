@@ -44,12 +44,6 @@ defineProps<{
                             class="role-tag"
                         />
                         <Tag
-                            v-if="player.isSilenced"
-                            value="禁言·禁票"
-                            severity="warn"
-                            class="role-tag"
-                        />
-                        <Tag
                             v-if="(
                                 ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RUNOFF', 'DAY_VOTE_RESULT'].includes(phase)
                                 && (player.isAlive || phase === 'DAY_VOTE_RESULT' || (
@@ -63,7 +57,7 @@ defineProps<{
                     </span>
                     <Tag
                         :value="!player.isAlive
-                            ? nightEliminatedPlayerIds.includes(player.id) ? '昨夜淘汰' : '淘汰'
+                            ? player.diedForLove ? '为爱赴死' : nightEliminatedPlayerIds.includes(player.id) ? '昨夜淘汰' : '淘汰'
                             : !player.isConnected ? '离线' : player.isMe ? '你' : '在线'"
                         :severity="!player.isAlive ? 'danger' : !player.isConnected ? 'secondary' : 'success'"
                     />

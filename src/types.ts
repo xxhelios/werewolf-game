@@ -1,4 +1,4 @@
-export type Role = 'werewolf' | 'seer' | 'witch' | 'hunter' | 'idiot' | 'villager';
+export type Role = 'werewolf' | 'seer' | 'witch' | 'hunter' | 'lover' | 'villager';
 
 export type GamePhase =
     | 'LOBBY'
@@ -6,6 +6,7 @@ export type GamePhase =
     | 'NIGHT_WEREWOLF'
     | 'NIGHT_WITCH'
     | 'NIGHT_SEER'
+    | 'NIGHT_LOVER'
     | 'DAY_DEATH_SPEECH'
     | 'DAY_VOTE'
     | 'DAY_VOTE_RUNOFF'
@@ -22,7 +23,7 @@ export const ROLE_INFO: Record<Role, { name: string; tip: string }> = {
     seer: { name: '🔮 预言家', tip: '每晚可以查验一名玩家的真实身份。' },
     witch: { name: '🧪 女巫', tip: '拥有一瓶解药和一瓶毒药（整局各一次）。' },
     hunter: { name: '🏹 猎人', tip: '被投票淘汰时，可以开枪带走一名仍存活的玩家，也可以选择不开枪。' },
-    idiot: { name: '💘 恋爱脑', tip: '首次被白天投票淘汰时自动使用免死金牌；此后永久失去发言和投票权。' },
+    lover: { name: '💘 恋爱脑', tip: '好人阵营。第一夜选择一名心动对象（不可更改）并得知其身份；第二夜可替死、爱的感化狼人，或保持清醒。第三夜起变为平民。' },
     villager: { name: '🧑 平民', tip: '认真听取发言，通过投票找出狼人。' }
 };
 
@@ -31,7 +32,7 @@ export interface Player {
     name: string;
     role: Role | 'unassigned';
     isAlive: boolean;
-    isSilenced: boolean;
+    diedForLove: boolean;
     isConnected: boolean;
     isReady: boolean;
     isMe: boolean;
@@ -49,7 +50,18 @@ export interface VoteResult {
     voterIds: string[];
     eliminated: boolean;
     hunterShot: boolean;
-    idiotSaved: boolean;
+    loverSubstituted: boolean;
+}
+
+export type LoverChoice = 'substitute' | 'convert' | 'abstain';
+
+export interface LoverInfo {
+    nightNumber: number;
+    targetId: string | null;
+    targetRole: Role | null;
+    targetAlive: boolean;
+    targetInDanger: boolean;
+    choice: LoverChoice | null;
 }
 
 export interface MemoEntry {

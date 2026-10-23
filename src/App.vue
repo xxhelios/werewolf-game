@@ -11,7 +11,7 @@ import RoomMembers from './components/RoomMembers.vue';
 import { parseServerMessage } from './network/protocol';
 import type { AvailableRoom, GamePlayer, RoomPlayer, ServerMessage, WolfIntention } from './network/protocol';
 import { ROLE_INFO } from './types';
-import type { ActiveGamePhase, ConnectionState, GamePhase, MemoEntry, Player, Role, RoleCounts, VoteResult, WitchPotions } from './types';
+import type { ActiveGamePhase, ConnectionState, GamePhase, LoverChoice, LoverInfo, MemoEntry, Player, Role, RoleCounts, VoteResult, WitchPotions } from './types';
 
 const appVersion = __APP_VERSION__;
 const MIN_PLAYERS = 4;
@@ -76,6 +76,10 @@ const selectedVoteTargetId = ref<string | null>(null);
 const runoffCandidateIds = ref<string[]>([]);
 const witchPotions = ref<WitchPotions>({ saveUsed: false, poisonUsed: false });
 const seerResult = ref<Role | null>(null);
+const loverInfo = ref<LoverInfo | null>(null);
+const loverNotice = ref<string | null>(null);
+const loverDecisionPending = ref(false);
+const loverCanDecide = ref(false);
 const logs = ref<MemoEntry[]>([{ text: '[系统] 创建房间或输入房间码加入好友的房间。', isOwnAction: false }]);
 
 let roomConnection: WebSocket | null = null;
@@ -136,6 +140,7 @@ const phaseTitle = computed(() => ({
     NIGHT_WEREWOLF: '第一步 · 狼人行动 🐺',
     NIGHT_WITCH: '第二步 · 女巫行动 🧪',
     NIGHT_SEER: '第三步 · 预言家查验 🔮',
+    NIGHT_LOVER: '第四步 · 恋爱脑行动 💘',
     DAY_DEATH_SPEECH: '天亮了 · 昨夜淘汰玩家发言',
     DAY_VOTE: '讨论与投票 ☀️',
     DAY_VOTE_RUNOFF: '平票加赛投票',
@@ -164,9 +169,6 @@ const phaseDescription = computed(() => {
         return '你昨夜被淘汰。请先完成发言，之后点击“入土为安”进入讨论与投票。';
     }
     if (currentPlayer.value && !currentPlayer.value.isAlive) return '你已被淘汰，请等待本局游戏结束。';
-    if (['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value) && currentPlayer.value?.isSilenced) {
-        return '你已使用免死金牌，继续存活；此后永久失去发言和投票权。';
-    }
     if (phase.value === 'ROLE_REVEAL') return '请查看你的角色信息，确认后点击“准备就绪”。';
     if (phase.value === 'DAY_DEATH_SPEECH') return '昨夜淘汰的玩家正在发言，请稍候。';
     if (phase.value === 'NIGHT_WEREWOLF') {
@@ -184,6 +186,12 @@ const phaseDescription = computed(() => {
             ? '每晚只能查验一位玩家，请谨慎选择；查验后点击“准备就绪”。'
             : '预言家查验中，请等待预言家完成行动。';
     }
+    if (phase.value === 'NIGHT_LOVER') {
+        if (currentPlayer.value?.role !== 'lover') return '恋爱脑行动中，请等待恋爱脑完成行动。';
+        return loverInfo.value?.nightNumber === 1
+            ? '请选择一名心动对象，选择后无法更改，你将得知对方的身份。'
+            : '请在下方三个选项中做出选择，选择后无法更改。';
+    }
     if (phase.value === 'DAY_VOTE') return '请选择一位玩家投票，或不选择目标直接确认弃权。投票内容不会公开。';
     if (phase.value === 'DAY_VOTE_RUNOFF') return '最高票出现平票。请仅在下方平票候选人中重新投票，或确认弃权。';
     return '本局游戏已结束。';
@@ -199,9 +207,7 @@ const canStartGame = computed(() =>
 );
 const phaseReadyPlayers = computed(() => players.value.filter(player =>
     player.isConnected
-    && (phase.value === 'DAY_VOTE_RESULT'
-        || (player.isAlive
-            && (!['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value) || !player.isSilenced)))
+    && (phase.value === 'DAY_VOTE_RESULT' || player.isAlive)
 ));
 const readyPlayerCount = computed(() => phaseReadyPlayers.value.filter(player => player.isReady).length);
 const connectedPlayerCount = computed(() => phaseReadyPlayers.value.length);
@@ -238,10 +244,10 @@ const canConfirmPhase = computed(() => {
         && nightEliminatedPlayerIds.value.includes(player.id)
     ) return true;
     if (!player?.isAlive) return false;
-    if (['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value) && player.isSilenced) return false;
     if (phase.value === 'NIGHT_WEREWOLF') return player.role === 'werewolf';
     if (phase.value === 'NIGHT_WITCH') return player.role === 'witch';
     if (phase.value === 'NIGHT_SEER') return player.role === 'seer';
+    if (phase.value === 'NIGHT_LOVER') return player.role === 'lover';
     return phase.value === 'ROLE_REVEAL'
         || phase.value === 'DAY_VOTE'
         || phase.value === 'DAY_VOTE_RUNOFF';
@@ -249,7 +255,8 @@ const canConfirmPhase = computed(() => {
 const phaseStatusMessages: Partial<Record<GamePhase, string>> = {
     NIGHT_WEREWOLF: '狼人行动中',
     NIGHT_WITCH: '女巫行动中',
-    NIGHT_SEER: '预言家行动中'
+    NIGHT_SEER: '预言家行动中',
+    NIGHT_LOVER: '恋爱脑行动中'
 };
 const phaseStatusMessage = computed(() => phaseStatusMessages[phase.value] ?? '');
 const canReady = computed(() => {
@@ -259,7 +266,9 @@ const canReady = computed(() => {
         && player
         && nightEliminatedPlayerIds.value.includes(player.id)
     );
-    const canConfirmVoteResult = phase.value === 'DAY_VOTE_RESULT' && Boolean(player);
+    const canConfirmVoteResult = phase.value === 'DAY_VOTE_RESULT'
+        && Boolean(player)
+        && !loverDecisionPending.value;
     if (!player
         || (!player.isAlive && !canConfirmDeathSpeech && !canConfirmVoteResult)
         || !canConfirmPhase.value
@@ -274,8 +283,25 @@ const canReady = computed(() => {
     if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !wolfTargetIsUnanimous.value) {
         return false;
     }
+    if (phase.value === 'NIGHT_LOVER' && player.role === 'lover' && !loverActionDone.value) {
+        return false;
+    }
     return phase.value !== 'GAME_OVER';
 });
+const loverOptions = computed(() => ({
+    canSubstitute: Boolean(loverInfo.value?.targetAlive && loverInfo.value.targetInDanger),
+    canConvert: Boolean(loverInfo.value?.targetAlive && loverInfo.value.targetRole === 'werewolf')
+}));
+const loverActionDone = computed(() => {
+    const info = loverInfo.value;
+    if (!info) return false;
+    if (info.nightNumber === 1) return info.targetId !== null;
+    return info.choice !== null
+        || (!loverOptions.value.canSubstitute && !loverOptions.value.canConvert);
+});
+const loverTargetName = computed(() =>
+    players.value.find(player => player.id === loverInfo.value?.targetId)?.name ?? '未知玩家'
+);
 const canChooseAction = computed(() =>
     connectionState.value === 'connected'
     && !isTemporarilyAway.value
@@ -492,6 +518,8 @@ function handleRoomMessage(message: ServerMessage): void {
         selectedPoisonTargetId.value = null;
         selectedSeerTargetId.value = null;
         selectedVoteTargetId.value = null;
+        loverInfo.value = null;
+        loverNotice.value = null;
         runoffCandidateIds.value = [];
         addLog('你已退出房间。');
         return;
@@ -520,7 +548,7 @@ function handleRoomMessage(message: ServerMessage): void {
             ...player,
             role: 'unassigned',
             isAlive: true,
-            isSilenced: false,
+            diedForLove: false,
             isMe: !isSpectator.value && player.id === playerId.value
         }));
         if (!renameName.value) {
@@ -558,6 +586,11 @@ function handleRoomMessage(message: ServerMessage): void {
         wolfTargetId.value = message.wolfTargetId;
         witchPotions.value = message.witchPotions ?? { saveUsed: false, poisonUsed: false };
         seerResult.value = message.seerResult;
+        loverInfo.value = message.lover;
+        if (message.loverNotice && message.loverNotice !== loverNotice.value) addLog(message.loverNotice);
+        loverNotice.value = message.loverNotice;
+        loverDecisionPending.value = message.loverDecisionPending;
+        loverCanDecide.value = message.loverCanDecide;
         selectedWolfTargetId.value = message.selectedWolfTargetId;
         selectedSaveTargetId.value = message.selectedSaveTargetId;
         selectedPoisonTargetId.value = message.selectedPoisonTargetId;
@@ -576,6 +609,7 @@ function handleRoomMessage(message: ServerMessage): void {
                 NIGHT_WEREWOLF: '进入狼人行动阶段。',
                 NIGHT_WITCH: '进入女巫行动阶段。',
                 NIGHT_SEER: '进入预言家查验阶段。',
+                NIGHT_LOVER: '进入恋爱脑行动阶段。',
                 DAY_DEATH_SPEECH: '天亮了，昨夜淘汰的玩家开始发言。',
                 DAY_VOTE: '进入讨论与投票阶段。',
                 DAY_VOTE_RUNOFF: '最高票出现平票，进入加赛投票。',
@@ -610,8 +644,8 @@ function updateGamePlayers(
                 && existing.name === player.name
                 && existing.role === role
                 && existing.isAlive === player.isAlive
+                && existing.diedForLove === player.diedForLove
                 && existing.isConnected === player.isConnected
-                && existing.isSilenced === player.isSilenced
                 && existing.isReady === player.isReady
                 && existing.isMe === (!isSpectator.value && player.id === playerId.value);
         });
@@ -797,10 +831,30 @@ function selectSeerTarget(player: Player): void {
     sendRoomMessage({ type: 'game-action', action: 'seer-check', targetId: player.id });
 }
 
+function selectLoverTarget(player: Player): void {
+    if (!canChooseAction.value
+        || currentPlayer.value?.role !== 'lover'
+        || loverInfo.value?.nightNumber !== 1
+        || loverInfo.value.targetId) return;
+    sendRoomMessage({ type: 'game-action', action: 'lover-target', targetId: player.id });
+}
+
+function chooseLoverOption(choice: LoverChoice): void {
+    if (!canChooseAction.value
+        || currentPlayer.value?.role !== 'lover'
+        || loverInfo.value?.nightNumber !== 2
+        || loverInfo.value.choice) return;
+    sendRoomMessage({ type: 'game-action', action: 'lover-choice', choice });
+}
+
+function decideForLove(substitute: boolean): void {
+    if (!loverCanDecide.value) return;
+    sendRoomMessage({ type: 'game-action', action: 'lover-decision', substitute });
+}
+
 function selectVoteTarget(player: Player): void {
     if (!canChooseAction.value
-        || !['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value)
-        || currentPlayer.value?.isSilenced) return;
+        || !['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase.value)) return;
     selectedVoteTargetId.value = player.id;
     sendRoomMessage({ type: 'game-action', action: 'vote', targetId: player.id });
 }
@@ -1061,6 +1115,11 @@ onUnmounted(() => {
                                     确认结果后进入下一轮。
                                 </template>
                             </Message>
+                            <Message v-if="loverDecisionPending" severity="warn" :closable="false">
+                                {{ loverCanDecide
+                                    ? `你的心动对象 ${loverTargetName} 被投票淘汰，请抉择是否为爱赴死。`
+                                    : '恋爱脑正在抉择，请稍候。' }}
+                            </Message>
                             <Message v-if="hunterShotPending" severity="warn" :closable="false">
                                 猎人正在决定是否开枪，确认后才会完成本轮结果。
                             </Message>
@@ -1075,11 +1134,10 @@ onUnmounted(() => {
                                         <small>
                                             投票玩家：{{ voterNames(result) }}
                                         </small>
-                                        <small v-if="result.idiotSaved">免死金牌：继续存活，之后禁言禁票</small>
                                     </div>
                                     <Tag
-                                        :value="`${result.votes} 票${result.eliminated ? ' · 淘汰' : ''}${result.hunterShot ? ' · 猎人带走' : ''}${result.idiotSaved ? ' · 免死' : ''}`"
-                                        :severity="result.eliminated || result.hunterShot ? 'danger' : result.idiotSaved ? 'warn' : 'info'"
+                                        :value="`${result.votes} 票${result.eliminated ? ' · 淘汰' : ''}${result.hunterShot ? ' · 猎人带走' : ''}${result.loverSubstituted ? ' · 恋爱脑替死' : ''}`"
+                                        :severity="result.eliminated || result.hunterShot ? 'danger' : result.loverSubstituted ? 'warn' : 'info'"
                                     />
                                 </li>
                             </ul>
@@ -1194,21 +1252,80 @@ onUnmounted(() => {
                                 查验结果：{{ ROLE_INFO[seerResult].name }}
                             </Message>
                         </div>
+                        <div v-else-if="phase === 'NIGHT_LOVER' && currentPlayer?.role === 'lover' && currentPlayer.isAlive && loverInfo" class="lover-panel">
+                            <template v-if="loverInfo.nightNumber === 1">
+                                <div class="action-row">
+                                    <Button
+                                        v-for="player in aliveTargets"
+                                        :key="player.id"
+                                        :label="`心动 [${player.name}]`"
+                                        icon="pi pi-heart"
+                                        severity="help"
+                                        :outlined="loverInfo.targetId !== player.id"
+                                        :disabled="!canChooseAction || loverInfo.targetId !== null"
+                                        @click="selectLoverTarget(player)"
+                                    />
+                                </div>
+                            </template>
+                            <template v-else>
+                                <Message v-if="!loverInfo.targetAlive" severity="info" :closable="false">
+                                    你的心动对象已经淘汰，今晚没有可做的选择。
+                                </Message>
+                                <div v-else class="action-row">
+                                    <Button
+                                        label="替死"
+                                        icon="pi pi-heart-fill"
+                                        severity="danger"
+                                        :outlined="loverInfo.choice !== 'substitute'"
+                                        :disabled="!canChooseAction || loverInfo.choice !== null || !loverOptions.canSubstitute"
+                                        @click="chooseLoverOption('substitute')"
+                                    />
+                                    <Button
+                                        label="爱的感化"
+                                        icon="pi pi-sparkles"
+                                        severity="help"
+                                        :outlined="loverInfo.choice !== 'convert'"
+                                        :disabled="!canChooseAction || loverInfo.choice !== null || !loverOptions.canConvert"
+                                        @click="chooseLoverOption('convert')"
+                                    />
+                                    <Button
+                                        label="保持清醒"
+                                        icon="pi pi-eye"
+                                        severity="secondary"
+                                        :outlined="loverInfo.choice !== 'abstain'"
+                                        :disabled="!canChooseAction || loverInfo.choice !== null"
+                                        @click="chooseLoverOption('abstain')"
+                                    />
+                                </div>
+                                <small>
+                                    替死：仅当心动对象今晚会被杀死时可用，你将代替对方死亡。
+                                    爱的感化：仅当对象是狼人时可用，对方变为平民，你会死亡。
+                                    保持清醒：不做任何事，天亮后变为普通平民。
+                                </small>
+                            </template>
+                            <Message v-if="loverInfo.targetId" severity="info" :closable="false" class="action-result">
+                                心动对象：{{ loverTargetName }}（{{ loverInfo.targetRole ? ROLE_INFO[loverInfo.targetRole].name : '未知' }}）
+                                <template v-if="loverInfo.nightNumber === 2 && loverInfo.targetAlive">
+                                    ；今晚{{ loverInfo.targetInDanger ? '将被杀死' : '不会被杀死' }}
+                                </template>
+                            </Message>
+                        </div>
                         <Message
-                            v-else-if="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && currentPlayer?.isAlive && currentPlayer.isSilenced"
+                            v-if="loverNotice && phase !== 'GAME_OVER'"
                             severity="warn"
                             :closable="false"
+                            class="action-result"
                         >
-                            你已使用免死金牌，继续存活；此后永久失去发言和投票权。
+                            {{ loverNotice }}
                         </Message>
                         <Message
-                            v-else-if="phase === 'DAY_VOTE_RUNOFF' && currentPlayer?.isAlive"
+                            v-if="phase === 'DAY_VOTE_RUNOFF' && currentPlayer?.isAlive"
                             severity="warn"
                             :closable="false"
                         >
                             平票加赛：本轮只能在平票候选人中选择。
                         </Message>
-                        <div v-if="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && currentPlayer?.isAlive && !currentPlayer.isSilenced" class="action-row">
+                        <div v-if="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && currentPlayer?.isAlive" class="action-row">
                             <Button
                                 v-for="player in voteTargets"
                                 :key="player.id"
@@ -1232,6 +1349,22 @@ onUnmounted(() => {
                             已准备 {{ readyPlayerCount }} / {{ connectedPlayerCount }} 位在线玩家
                         </div>
                         <div v-if="phase !== 'GAME_OVER' && canConfirmPhase" class="action-row">
+                            <Button
+                                v-if="loverCanDecide"
+                                :label="`为爱赴死（替 ${loverTargetName} 出局）`"
+                                icon="pi pi-heart-fill"
+                                severity="danger"
+                                :disabled="connectionState !== 'connected' || isTemporarilyAway"
+                                @click="decideForLove(true)"
+                            />
+                            <Button
+                                v-if="loverCanDecide"
+                                label="保持清醒"
+                                icon="pi pi-eye"
+                                severity="secondary"
+                                :disabled="connectionState !== 'connected' || isTemporarilyAway"
+                                @click="decideForLove(false)"
+                            />
                             <Button
                                 :label="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && !selectedVoteTargetId && !currentPlayer?.isReady
                                     ? '确认弃权'
