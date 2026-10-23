@@ -27,6 +27,12 @@ interface GamePlayer {
     isReady: boolean;
 }
 
+interface WolfIntention {
+    playerId: string;
+    playerName: string;
+    targetId: string | null;
+}
+
 type ServerMessage =
     | { type: 'connected'; playerId: string }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
@@ -38,6 +44,7 @@ type ServerMessage =
         phase: ActiveGamePhase;
         players: GamePlayer[];
         roleCounts: RoleCounts;
+        wolfIntentions: WolfIntention[];
         readyPlayerIds: string[];
         countdownSeconds: number | null;
         role: Role | null;
@@ -77,6 +84,7 @@ const isSpectator = ref(false);
 const playerId = ref<string | null>(null);
 const players = ref<Player[]>([]);
 const roleCounts = ref<RoleCounts | null>(null);
+const wolfIntentions = ref<WolfIntention[]>([]);
 const phase = ref<GamePhase>('LOBBY');
 const connectionState = ref<ConnectionState>('connecting');
 const roomError = ref('');
@@ -187,7 +195,7 @@ const phaseDescription = computed(() => {
     if (phase.value === 'DAY_DEATH_SPEECH') return '昨夜淘汰的玩家正在发言，请稍候。';
     if (phase.value === 'NIGHT_WEREWOLF') {
         return currentPlayer.value?.role === 'werewolf'
-            ? '狼人选择今晚的袭击目标，确认后点击“准备就绪”。'
+            ? '查看狼人伙伴的目标意向；所有在线狼人选择同一目标后，才能确认行动。'
             : '狼人行动中，请等待狼人完成行动。';
     }
     if (phase.value === 'NIGHT_WITCH') {
@@ -215,6 +223,16 @@ const connectedPlayerCount = computed(() => phaseReadyPlayers.value.length);
 const wolfTargetName = computed(() => wolfTargetId.value
     ? players.value.find(player => player.id === wolfTargetId.value)?.name ?? '未知玩家'
     : '狼人未形成有效袭击目标');
+const wolfTargetIsUnanimous = computed(() => {
+    const livingConnectedWolves = players.value.filter(player =>
+        player.role === 'werewolf' && player.isAlive && player.isConnected
+    );
+    if (livingConnectedWolves.length === 0 || wolfIntentions.value.length !== livingConnectedWolves.length) {
+        return false;
+    }
+    const targetIds = wolfIntentions.value.map(intention => intention.targetId);
+    return Boolean(targetIds[0]) && targetIds.every(targetId => targetId === targetIds[0]);
+});
 const readyButtonLabel = computed(() => {
     if (phase.value === 'ROLE_REVEAL' && currentPlayer.value?.isReady) return '已准备就绪';
     if (phase.value === 'DAY_DEATH_SPEECH') {
@@ -262,6 +280,9 @@ const canReady = computed(() => {
         return false;
     }
     if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !selectedWolfTargetId.value) {
+        return false;
+    }
+    if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !wolfTargetIsUnanimous.value) {
         return false;
     }
     return phase.value !== 'GAME_OVER';
@@ -402,6 +423,13 @@ function parseServerMessage(value: unknown): ServerMessage | null {
         && isGamePhase(value.phase)
         && isGamePlayerList(value.players)
         && isRoleCounts(value.roleCounts)
+        && Array.isArray(value.wolfIntentions)
+        && value.wolfIntentions.every(intention =>
+            isRecord(intention)
+            && typeof intention.playerId === 'string'
+            && typeof intention.playerName === 'string'
+            && (intention.targetId === null || typeof intention.targetId === 'string')
+        )
         && Array.isArray(value.readyPlayerIds)
         && value.readyPlayerIds.every(id => typeof id === 'string')
         && (value.countdownSeconds === null || (
@@ -433,6 +461,7 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             phase: value.phase,
             players: value.players,
             roleCounts: value.roleCounts,
+            wolfIntentions: value.wolfIntentions,
             readyPlayerIds: value.readyPlayerIds,
             countdownSeconds: value.countdownSeconds,
             role: value.role,
@@ -572,6 +601,7 @@ function handleRoomMessage(message: ServerMessage): void {
         hostId.value = null;
         players.value = [];
         roleCounts.value = null;
+        wolfIntentions.value = [];
         roomStarted.value = false;
         phase.value = 'LOBBY';
         countdownSeconds.value = null;
@@ -635,6 +665,7 @@ function handleRoomMessage(message: ServerMessage): void {
         nightEliminatedPlayerIds.value = [];
         phase.value = message.phase;
         roleCounts.value = message.roleCounts;
+        wolfIntentions.value = message.wolfIntentions;
         countdownSeconds.value = message.countdownSeconds;
         nightEliminatedPlayerIds.value = message.nightEliminatedPlayerIds;
         updateGamePlayers(message.players, message.phase, message.role);
@@ -813,6 +844,12 @@ function selectWolfTarget(player: Player): void {
     if (!canChooseAction.value || currentPlayer.value?.role !== 'werewolf') return;
     selectedWolfTargetId.value = player.id;
     sendRoomMessage({ type: 'game-action', action: 'wolf-target', targetId: player.id });
+}
+
+function wolfPartnerIntentions(targetId: string): string[] {
+    return wolfIntentions.value
+        .filter(intention => intention.playerId !== playerId.value && intention.targetId === targetId)
+        .map(intention => intention.playerName);
 }
 
 function selectWitchTarget(action: 'witch-save' | 'witch-poison', player: Player): void {
@@ -1106,16 +1143,28 @@ onUnmounted(() => {
                             </div>
                         </div>
                         <div v-else-if="phase === 'NIGHT_WEREWOLF' && currentPlayer?.role === 'werewolf' && currentPlayer.isAlive" class="action-row">
-                            <Button
+                            <div
                                 v-for="player in aliveTargets"
                                 :key="player.id"
-                                :label="`袭击 [${player.name}]`"
-                                icon="pi pi-bolt"
-                                severity="danger"
-                                :outlined="selectedWolfTargetId === player.id"
-                                :disabled="!canChooseAction"
-                                @click="selectWolfTarget(player)"
-                            />
+                                class="wolf-target-option"
+                            >
+                                <Button
+                                    :label="`袭击 [${player.name}]`"
+                                    icon="pi pi-bolt"
+                                    severity="danger"
+                                    :outlined="selectedWolfTargetId !== player.id"
+                                    :disabled="!canChooseAction"
+                                    @click="selectWolfTarget(player)"
+                                />
+                                <small v-if="wolfPartnerIntentions(player.id).length">
+                                    狼人伙伴意向：{{ wolfPartnerIntentions(player.id).join('、') }}
+                                </small>
+                            </div>
+                            <Message :severity="wolfTargetIsUnanimous ? 'success' : 'warn'" :closable="false">
+                                {{ wolfTargetIsUnanimous
+                                    ? '在线狼人已统一袭击目标，可以确认。'
+                                    : '等待所有在线狼人选择相同的袭击目标后，才能确认。' }}
+                            </Message>
                         </div>
                         <div v-else-if="phase === 'NIGHT_WITCH' && currentPlayer?.role === 'witch' && currentPlayer.isAlive" class="witch-panel">
                             <Message severity="warn" :closable="false">
@@ -1388,6 +1437,18 @@ button, input {
     display: grid;
     gap: 10px;
     margin: 16px 0;
+}
+
+.wolf-target-option {
+    display: grid;
+    justify-items: stretch;
+    gap: 5px;
+}
+
+.wolf-target-option small {
+    color: var(--p-surface-300);
+    font-size: 0.75rem;
+    text-align: center;
 }
 
 .potion-status,

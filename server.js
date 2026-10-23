@@ -116,6 +116,15 @@ function connectedPlayers(room) {
 
 function gameProgressFor(room, client, isSpectator = false) {
     const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
+    const wolfIntentions = !isSpectator
+        && gamePlayer?.role === 'werewolf'
+        && room.phase === 'NIGHT_WEREWOLF'
+        ? phaseParticipants(room).map(wolf => ({
+            playerId: wolf.id,
+            playerName: wolf.name,
+            targetId: room.wolfTargets.get(wolf.id) ?? null
+        }))
+        : [];
     const publicPlayers = room.gamePlayers.map(player => {
         const roomPlayer = room.players.find(candidate => candidate.id === player.id);
         return {
@@ -137,6 +146,7 @@ function gameProgressFor(room, client, isSpectator = false) {
         phase: room.phase,
         players: publicPlayers,
         roleCounts: room.roleCounts,
+        wolfIntentions,
         readyPlayerIds: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(room.phase)
             ? [...room.readyPlayerIds]
             : [],
@@ -197,7 +207,7 @@ function startHiddenActionDelay(room) {
 
 function phaseActionsComplete(room) {
     if (room.phase === 'NIGHT_WEREWOLF') {
-        return phaseParticipants(room).every(player => room.wolfTargets.has(player.id));
+        return Boolean(unanimousWolfTarget(room));
     }
     if (room.phase === 'DAY_VOTE') {
         return connectedPlayers(room).every(player => room.votes.has(player.id));
@@ -205,6 +215,14 @@ function phaseActionsComplete(room) {
     if (room.phase === 'DAY_VOTE_RESULT') return !room.hunterShotPending;
     if (room.phase === 'GAME_OVER') return false;
     return true;
+}
+
+function unanimousWolfTarget(room) {
+    const wolves = phaseParticipants(room);
+    if (wolves.length === 0) return null;
+    const targetIds = wolves.map(player => room.wolfTargets.get(player.id));
+    if (targetIds.some(targetId => !targetId)) return null;
+    return targetIds.every(targetId => targetId === targetIds[0]) ? targetIds[0] : null;
 }
 
 function calculateWolfTarget(room) {
@@ -840,6 +858,15 @@ function handleMessage(client, message) {
             sendError(client, '请先选择狼人袭击目标。');
             return;
         }
+        if (
+            message.isReady
+            && room.phase === 'NIGHT_WEREWOLF'
+            && gamePlayer.role === 'werewolf'
+            && unanimousWolfTarget(room) !== room.wolfTargets.get(client.id)
+        ) {
+            sendError(client, '请等待所有在线狼人统一袭击目标后再确认。');
+            return;
+        }
         if (message.isReady && room.phase === 'DAY_VOTE' && !room.votes.has(client.id)) {
             room.votes.set(client.id, null);
         }
@@ -929,6 +956,13 @@ function handleMessage(client, message) {
             if (!target || target.role === 'werewolf') {
                 sendError(client, '袭击目标无效。');
                 return;
+            }
+            if (room.wolfTargets.get(client.id) !== target.id) {
+                phaseParticipants(room).forEach(wolf => {
+                    room.readyPlayerIds.delete(wolf.id);
+                    const wolfPlayer = room.gamePlayers.find(player => player.id === wolf.id);
+                    if (wolfPlayer) wolfPlayer.isReady = false;
+                });
             }
             room.wolfTargets.set(client.id, target.id);
         } else if (action === 'witch-save' || action === 'witch-poison') {
