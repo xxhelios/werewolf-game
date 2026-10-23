@@ -205,7 +205,7 @@ const phaseDescription = computed(() => {
     }
     if (phase.value === 'NIGHT_SEER') {
         return currentPlayer.value?.role === 'seer'
-            ? '选择一位玩家查验身份，确认后点击“准备就绪”。'
+            ? '每晚只能查验一位玩家，请谨慎选择；查验后点击“准备就绪”。'
             : '预言家查验中，请等待预言家完成行动。';
     }
     if (phase.value === 'DAY_VOTE') return '请选择一位玩家投票，或不选择目标直接确认弃权。投票内容不会公开。';
@@ -292,6 +292,7 @@ const canChooseAction = computed(() =>
     && countdownSeconds.value === null
     && Boolean(currentPlayer.value?.isAlive)
     && !currentPlayer.value?.isReady
+    && !(phase.value === 'NIGHT_SEER' && selectedSeerTargetId.value)
 );
 
 function isGamePhase(value: unknown): value is ActiveGamePhase {

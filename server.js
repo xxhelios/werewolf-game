@@ -1003,6 +1003,10 @@ function handleMessage(client, message) {
                 sendError(client, '当前阶段不能进行预言家查验。');
                 return;
             }
+            if (room.seerTargetId !== null) {
+                sendError(client, '本晚已查验过一名玩家。');
+                return;
+            }
             if (!validLivingTarget(room, targetId) || targetId === client.id) {
                 sendError(client, '查验目标无效。');
                 return;
