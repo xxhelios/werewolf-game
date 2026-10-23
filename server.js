@@ -741,6 +741,7 @@ function beginGame(room, initiator) {
             role: 'unassigned',
             isAlive: gamePlayer.isAlive,
             isConnected: gamePlayer.isConnected,
+            isSilenced: gamePlayer.isSilenced,
             isReady: false
         }))
     }));
@@ -1304,6 +1305,7 @@ webSocketServer.on('connection', (socket, request) => {
                     role: 'unassigned',
                     isAlive: player.isAlive,
                     isConnected: player.isConnected,
+                    isSilenced: player.isSilenced,
                     isReady: existingPlayer.room.readyPlayerIds.has(player.id)
                 }))
             });

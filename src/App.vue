@@ -20,6 +20,7 @@ const MAX_MEMO_ENTRIES = 200;
 const ROOM_CODE_PATTERN = /^[A-Z0-9]{4}$/;
 const PLAYER_ID_STORAGE_KEY = 'werewolf-player-id';
 const ROOM_CODE_STORAGE_KEY = 'werewolf-room-code';
+const INVALID_SERVER_MESSAGE_ERROR = '收到无法处理的房间服务消息，请刷新页面重试。';
 const PLAYER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const FRUIT_NAMES = [
@@ -584,14 +585,22 @@ function connectToRoomService(): void {
             parsed = JSON.parse(String(event.data));
         } catch (error) {
             console.error('Unable to parse room service message.', error);
-            setRoomError('收到无法处理的房间服务消息，请刷新页面重试。');
+            setRoomError(INVALID_SERVER_MESSAGE_ERROR);
             return;
         }
         const message = parseServerMessage(parsed);
         if (!message) {
-            setRoomError('收到无法处理的房间服务消息，请刷新页面重试。');
+            const messageType = typeof parsed === 'object' && parsed !== null && 'type' in parsed
+                ? String(parsed.type)
+                : 'unknown';
+            console.error('Unable to validate room service message.', {
+                type: messageType,
+                keys: typeof parsed === 'object' && parsed !== null ? Object.keys(parsed) : []
+            });
+            setRoomError(INVALID_SERVER_MESSAGE_ERROR);
             return;
         }
+        if (roomError.value === INVALID_SERVER_MESSAGE_ERROR) roomError.value = '';
         handleRoomMessage(message);
     });
     connection.addEventListener('close', () => {
