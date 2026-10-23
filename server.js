@@ -25,11 +25,11 @@ function availableRoomsMessage() {
     return {
         type: 'available-rooms',
         rooms: [...rooms.values()]
-            .filter(room => !room.started && room.players.length < MAX_PLAYERS)
             .map(room => ({
                 code: room.code,
                 playerCount: room.players.length,
-                maxPlayers: MAX_PLAYERS
+                maxPlayers: MAX_PLAYERS,
+                started: Boolean(room.started)
             }))
     };
 }

@@ -942,7 +942,7 @@ onUnmounted(() => {
                                 <Button
                                     v-for="room in availableRooms"
                                     :key="room.code"
-                                    :label="`${room.code} · ${room.playerCount}/${room.maxPlayers} 人`"
+                                    :label="`${room.code} · ${room.playerCount}/${room.maxPlayers} 人${room.started ? ' · 游戏中' : ''}`"
                                     severity="secondary"
                                     outlined
                                     size="small"

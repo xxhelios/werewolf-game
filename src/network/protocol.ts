@@ -28,6 +28,7 @@ export interface AvailableRoom {
     code: string;
     playerCount: number;
     maxPlayers: number;
+    started: boolean;
 }
 
 export type ServerMessage =
@@ -97,7 +98,8 @@ function isAvailableRoom(value: unknown): value is AvailableRoom {
         && typeof value.maxPlayers === 'number'
         && Number.isInteger(value.maxPlayers)
         && value.maxPlayers > 0
-        && value.playerCount < value.maxPlayers;
+        && value.playerCount <= value.maxPlayers
+        && typeof value.started === 'boolean';
 }
 
 function isRole(value: unknown): value is Role {
