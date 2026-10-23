@@ -1,5 +1,5 @@
 import { createApp } from 'vue';
-import 'primeicons/primeicons.css';
+import './primeicons.css';
 import PrimeVue from 'primevue/config';
 import Aura from '@primeuix/themes/aura';
 import ToastService from 'primevue/toastservice';

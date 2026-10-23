@@ -1,34 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
 import InputText from 'primevue/inputtext';
 import Message from 'primevue/message';
 import Tag from 'primevue/tag';
-
-type Role = 'werewolf' | 'seer' | 'witch' | 'villager';
-type GamePhase =
-    | 'LOBBY'
-    | 'ROLE_REVEAL'
-    | 'NIGHT_WEREWOLF'
-    | 'NIGHT_WITCH'
-    | 'NIGHT_SEER'
-    | 'DAY_DEATH_SPEECH'
-    | 'DAY_VOTE'
-    | 'DAY_VOTE_RESULT'
-    | 'GAME_OVER';
-type ActiveGamePhase = Exclude<GamePhase, 'LOBBY'>;
-type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'failed';
-
-interface Player {
-    id: string;
-    name: string;
-    role: Role | 'unassigned';
-    isAlive: boolean;
-    isConnected: boolean;
-    isReady: boolean;
-    isMe: boolean;
-}
+import AppHeader from './components/AppHeader.vue';
+import GameMemo from './components/GameMemo.vue';
+import RoomMembers from './components/RoomMembers.vue';
+import { ROLE_INFO } from './types';
+import type { ActiveGamePhase, ConnectionState, GamePhase, MemoEntry, Player, Role, VoteResult, WitchPotions } from './types';
 
 interface RoomPlayer {
     id: string;
@@ -44,18 +25,6 @@ interface GamePlayer {
     isAlive: boolean;
     isConnected: boolean;
     isReady: boolean;
-}
-
-interface WitchPotions {
-    saveUsed: boolean;
-    poisonUsed: boolean;
-}
-
-interface VoteResult {
-    targetId: string;
-    targetName: string;
-    votes: number;
-    eliminated: boolean;
 }
 
 type ServerMessage =
@@ -77,6 +46,9 @@ type ServerMessage =
         nightEliminatedPlayerIds: string[];
         voteResults: VoteResult[];
         roundWinner: string | null;
+        hunterShotPending: boolean;
+        hunterId: string | null;
+        hunterShotTargetId: string | null;
         selectedWolfTargetId: string | null;
         selectedSaveTargetId: string | null;
         selectedPoisonTargetId: string | null;
@@ -87,23 +59,12 @@ type ServerMessage =
     | { type: 'room-event'; playerId: string | null; text: string }
     | { type: 'error'; message: string };
 
-interface MemoEntry {
-    text: string;
-    isOwnAction: boolean;
-}
-
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 8;
+const MAX_MEMO_ENTRIES = 200;
 const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
 const PLAYER_ID_STORAGE_KEY = 'werewolf-player-id';
 const PLAYER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-const roleInfo: Record<Role, { name: string; tip: string }> = {
-    werewolf: { name: '🐺 狼人', tip: '每晚寻找目标并击杀一名好人。' },
-    seer: { name: '🔮 预言家', tip: '每晚可以查验一名玩家的真实身份。' },
-    witch: { name: '🧪 女巫', tip: '拥有一瓶解药和一瓶毒药（整局各一次）。' },
-    villager: { name: '🧑 平民', tip: '认真听取发言，通过投票找出狼人。' }
-};
 
 const playerName = ref('Player');
 const createRoomCodeInput = ref('');
@@ -121,6 +82,10 @@ const countdownSeconds = ref<number | null>(null);
 const nightEliminatedPlayerIds = ref<string[]>([]);
 const voteResults = ref<VoteResult[]>([]);
 const roundWinner = ref<string | null>(null);
+const hunterShotPending = ref(false);
+const hunterId = ref<string | null>(null);
+const hunterShotTargetId = ref<string | null>(null);
+const selectedHunterShotTargetId = ref<string | null>(null);
 const wolfTargetId = ref<string | null>(null);
 const selectedWolfTargetId = ref<string | null>(null);
 const selectedSaveTargetId = ref<string | null>(null);
@@ -130,7 +95,6 @@ const selectedVoteTargetId = ref<string | null>(null);
 const witchPotions = ref<WitchPotions>({ saveUsed: false, poisonUsed: false });
 const seerResult = ref<Role | null>(null);
 const logs = ref<MemoEntry[]>([{ text: '[系统] 创建房间或输入房间码加入好友的房间。', isOwnAction: false }]);
-const logContainer = ref<HTMLDivElement | null>(null);
 
 let roomConnection: WebSocket | null = null;
 
@@ -166,7 +130,7 @@ const waitingDescription = computed(() => {
 });
 const roleDetails = computed(() => {
     const role = currentPlayer.value?.role;
-    return role && role !== 'unassigned' ? roleInfo[role] : { name: '未知', tip: '' };
+    return role && role !== 'unassigned' ? ROLE_INFO[role] : { name: '未知', tip: '' };
 });
 const phaseTitle = computed(() => ({
     LOBBY: '等待玩家',
@@ -181,6 +145,10 @@ const phaseTitle = computed(() => ({
 })[phase.value]);
 const phaseDescription = computed(() => {
     if (phase.value === 'DAY_VOTE_RESULT') {
+        if (hunterShotPending.value && currentPlayer.value?.id === hunterId.value) {
+            return '你被投票淘汰了。可以选择一名仍存活的玩家开枪带走，或选择不开枪。';
+        }
+        if (hunterShotPending.value) return '猎人正在决定是否开枪，请稍候。';
         return '请查看本轮投票结果。所有在线玩家确认后，游戏将结束或进入下一轮。';
     }
     if (
@@ -300,7 +268,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isRole(value: unknown): value is Role {
-    return value === 'werewolf' || value === 'seer' || value === 'witch' || value === 'villager';
+    return value === 'werewolf'
+        || value === 'seer'
+        || value === 'witch'
+        || value === 'hunter'
+        || value === 'villager';
 }
 
 function isWitchPotions(value: unknown): value is WitchPotions {
@@ -318,6 +290,7 @@ function isVoteResultList(value: unknown): value is VoteResult[] {
         && Number.isInteger(result.votes)
         && result.votes >= 0
         && typeof result.eliminated === 'boolean'
+        && typeof result.hunterShot === 'boolean'
     );
 }
 
@@ -407,6 +380,9 @@ function parseServerMessage(value: unknown): ServerMessage | null {
         && value.nightEliminatedPlayerIds.every(id => typeof id === 'string')
         && isVoteResultList(value.voteResults)
         && (value.roundWinner === null || typeof value.roundWinner === 'string')
+        && typeof value.hunterShotPending === 'boolean'
+        && (value.hunterId === null || typeof value.hunterId === 'string')
+        && (value.hunterShotTargetId === null || typeof value.hunterShotTargetId === 'string')
         && (value.selectedWolfTargetId === null || typeof value.selectedWolfTargetId === 'string')
         && (value.selectedSaveTargetId === null || typeof value.selectedSaveTargetId === 'string')
         && (value.selectedPoisonTargetId === null || typeof value.selectedPoisonTargetId === 'string')
@@ -427,6 +403,9 @@ function parseServerMessage(value: unknown): ServerMessage | null {
             nightEliminatedPlayerIds: value.nightEliminatedPlayerIds,
             voteResults: value.voteResults,
             roundWinner: value.roundWinner,
+            hunterShotPending: value.hunterShotPending,
+            hunterId: value.hunterId,
+            hunterShotTargetId: value.hunterShotTargetId,
             selectedWolfTargetId: value.selectedWolfTargetId,
             selectedSaveTargetId: value.selectedSaveTargetId,
             selectedPoisonTargetId: value.selectedPoisonTargetId,
@@ -464,8 +443,9 @@ async function addLog(text: string, actorId: string | null = null): Promise<void
         text: `[${new Date().toLocaleTimeString()}] ${text}`,
         isOwnAction: actorId !== null && actorId === playerId.value
     });
-    await nextTick();
-    if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight;
+    if (logs.value.length > MAX_MEMO_ENTRIES) {
+        logs.value.splice(0, logs.value.length - MAX_MEMO_ENTRIES);
+    }
 }
 
 function setRoomError(message: string): void {
@@ -542,6 +522,10 @@ function handleRoomMessage(message: ServerMessage): void {
         countdownSeconds.value = null;
         nightEliminatedPlayerIds.value = [];
         voteResults.value = [];
+        hunterShotPending.value = false;
+        hunterId.value = null;
+        hunterShotTargetId.value = null;
+        selectedHunterShotTargetId.value = null;
         roundWinner.value = null;
         selectedWolfTargetId.value = null;
         selectedSaveTargetId.value = null;
@@ -590,13 +574,7 @@ function handleRoomMessage(message: ServerMessage): void {
         phase.value = message.phase;
         countdownSeconds.value = message.countdownSeconds;
         nightEliminatedPlayerIds.value = message.nightEliminatedPlayerIds;
-        players.value = message.players.map(player => ({
-            ...player,
-            role: message.phase === 'GAME_OVER'
-                ? player.role
-                : player.id === playerId.value ? message.role ?? 'unassigned' : 'unassigned',
-            isMe: player.id === playerId.value
-        }));
+        updateGamePlayers(message.players, message.phase, message.role);
         wolfTargetId.value = message.wolfTargetId;
         witchPotions.value = message.witchPotions ?? { saveUsed: false, poisonUsed: false };
         seerResult.value = message.seerResult;
@@ -607,6 +585,10 @@ function handleRoomMessage(message: ServerMessage): void {
         selectedVoteTargetId.value = message.selectedVoteTargetId;
         voteResults.value = message.voteResults;
         roundWinner.value = message.roundWinner;
+        hunterShotPending.value = message.hunterShotPending;
+        hunterId.value = message.hunterId;
+        hunterShotTargetId.value = message.hunterShotTargetId;
+        if (!message.hunterShotPending) selectedHunterShotTargetId.value = null;
         if (previousPhase !== message.phase) {
             void addLog(({
                 ROLE_REVEAL: '游戏开始，请查看各自身份。',
@@ -623,14 +605,40 @@ function handleRoomMessage(message: ServerMessage): void {
     }
 
     roomStarted.value = true;
-    players.value = message.players.map(player => ({
-        ...player,
-        role: player.id === playerId.value ? message.role ?? 'unassigned' : 'unassigned',
-        isMe: player.id === playerId.value
-    }));
+    updateGamePlayers(message.players, message.phase, message.role);
     phase.value = message.phase;
     countdownSeconds.value = null;
     void addLog('游戏开始，请查看各自身份。');
+}
+
+function updateGamePlayers(
+    gamePlayers: GamePlayer[],
+    gamePhase: ActiveGamePhase,
+    ownRole: Role | null
+): void {
+    const unchanged = players.value.length === gamePlayers.length
+        && gamePlayers.every((player, index) => {
+            const existing = players.value[index];
+            const role = gamePhase === 'GAME_OVER'
+                ? player.role
+                : player.id === playerId.value ? ownRole ?? 'unassigned' : 'unassigned';
+            return existing.id === player.id
+                && existing.name === player.name
+                && existing.role === role
+                && existing.isAlive === player.isAlive
+                && existing.isConnected === player.isConnected
+                && existing.isReady === player.isReady
+                && existing.isMe === (player.id === playerId.value);
+        });
+    if (unchanged) return;
+
+    players.value = gamePlayers.map(player => ({
+        ...player,
+        role: gamePhase === 'GAME_OVER'
+            ? player.role
+            : player.id === playerId.value ? ownRole ?? 'unassigned' : 'unassigned',
+        isMe: player.id === playerId.value
+    }));
 }
 
 function connectToRoomService(): void {
@@ -748,6 +756,20 @@ function selectVoteTarget(player: Player): void {
     sendRoomMessage({ type: 'game-action', action: 'vote', targetId: player.id });
 }
 
+function shootHunterTarget(): void {
+    if (!selectedHunterShotTargetId.value || !hunterShotPending.value) return;
+    sendRoomMessage({
+        type: 'game-action',
+        action: 'hunter-shot',
+        targetId: selectedHunterShotTargetId.value
+    });
+}
+
+function passHunterShot(): void {
+    if (!hunterShotPending.value) return;
+    sendRoomMessage({ type: 'game-action', action: 'hunter-shot', targetId: null });
+}
+
 function toggleReady(): void {
     const player = currentPlayer.value;
     if (['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE_RESULT'].includes(phase.value) && player?.isReady) return;
@@ -788,24 +810,14 @@ onUnmounted(() => {
 
 <template>
     <div class="app-shell">
-        <header class="topbar">
-            <div class="brand">
-                <h1>🐺 宇宙狼人杀</h1>
-                <Tag v-if="roomCode" :value="`房间号 ${roomCode}`" severity="info" />
-                <Button
-                    v-if="roomCode"
-                    label="退出房间"
-                    icon="pi pi-sign-out"
-                    severity="secondary"
-                    size="small"
-                    outlined
-                    :disabled="connectionState !== 'connected'"
-                    @click="leaveRoom"
-                />
-                <Tag :value="roomStatus" :severity="roomCode ? 'info' : 'secondary'" />
-            </div>
-            <Tag :value="connectionLabel[connectionState]" :severity="connectionSeverity" />
-        </header>
+        <AppHeader
+            :room-code="roomCode"
+            :room-status="roomStatus"
+            :connection-label="connectionLabel[connectionState]"
+            :connection-severity="connectionSeverity"
+            :can-leave-room="connectionState === 'connected'"
+            @leave-room="leaveRoom"
+        />
 
         <main class="game-layout">
             <section class="game-column">
@@ -922,16 +934,60 @@ onUnmounted(() => {
                                     确认结果后进入下一轮。
                                 </template>
                             </Message>
+                            <Message v-if="hunterShotPending" severity="warn" :closable="false">
+                                猎人正在决定是否开枪，确认后才会完成本轮结果。
+                            </Message>
+                            <Message v-else-if="hunterShotTargetId" severity="danger" :closable="false">
+                                猎人已开枪，{{ players.find(player => player.id === hunterShotTargetId)?.name ?? '一名玩家' }} 被带走。
+                            </Message>
                             <h3>投票统计</h3>
                             <ul class="vote-result-list">
                                 <li v-for="result in voteResults" :key="result.targetId">
                                     <span>{{ result.targetName }}</span>
                                     <Tag
-                                        :value="`${result.votes} 票${result.eliminated ? ' · 淘汰' : ''}`"
-                                        :severity="result.eliminated ? 'danger' : 'info'"
+                                        :value="`${result.votes} 票${result.eliminated ? ' · 淘汰' : ''}${result.hunterShot ? ' · 猎人带走' : ''}`"
+                                        :severity="result.eliminated || result.hunterShot ? 'danger' : 'info'"
                                     />
                                 </li>
                             </ul>
+                        </div>
+                        <div
+                            v-if="phase === 'DAY_VOTE_RESULT'
+                                && hunterShotPending
+                                && currentPlayer?.id === hunterId"
+                            class="hunter-panel"
+                        >
+                            <h3>猎人反击</h3>
+                            <p>你已被投票出局，可开枪带走一名存活玩家。</p>
+                            <div class="action-row">
+                                <Button
+                                    v-for="player in aliveTargets"
+                                    :key="player.id"
+                                    :label="`开枪带走 [${player.name}]`"
+                                    icon="pi pi-bolt"
+                                    severity="danger"
+                                    :outlined="selectedHunterShotTargetId !== player.id"
+                                    :disabled="connectionState !== 'connected' || countdownSeconds !== null"
+                                    @click="selectedHunterShotTargetId = player.id"
+                                />
+                            </div>
+                            <div class="action-row">
+                                <Button
+                                    label="开枪"
+                                    icon="pi pi-check"
+                                    severity="danger"
+                                    :disabled="!selectedHunterShotTargetId
+                                        || connectionState !== 'connected'
+                                        || countdownSeconds !== null"
+                                    @click="shootHunterTarget"
+                                />
+                                <Button
+                                    label="不开枪"
+                                    severity="secondary"
+                                    :disabled="connectionState !== 'connected' || countdownSeconds !== null"
+                                    @click="passHunterShot"
+                                />
+                            </div>
                         </div>
                         <div v-else-if="phase === 'NIGHT_WEREWOLF' && currentPlayer?.role === 'werewolf' && currentPlayer.isAlive" class="action-row">
                             <Button
@@ -986,7 +1042,7 @@ onUnmounted(() => {
                                 @click="selectSeerTarget(player)"
                             />
                             <Message v-if="seerResult" severity="info" :closable="false" class="action-result">
-                                查验结果：{{ roleInfo[seerResult].name }}
+                                查验结果：{{ ROLE_INFO[seerResult].name }}
                             </Message>
                         </div>
                         <div v-else-if="phase === 'DAY_VOTE' && currentPlayer?.isAlive" class="action-row">
@@ -1028,66 +1084,17 @@ onUnmounted(() => {
                     </template>
                 </Card>
 
-                <Card class="logs-card">
-                    <template #title>游戏备忘录</template>
-                    <template #content>
-                        <div ref="logContainer" class="log-list" aria-live="polite">
-                            <div
-                                v-for="(entry, index) in logs"
-                                :key="index"
-                                class="log-entry"
-                                :class="{ 'own-action': entry.isOwnAction }"
-                            >{{ entry.text }}</div>
-                        </div>
-                    </template>
-                </Card>
+                <GameMemo :entries="logs" />
             </section>
 
             <aside class="sidebar">
-                <Card class="players-card">
-                    <template #title>房间成员</template>
-                    <template #subtitle>{{ players.length }} / {{ MAX_PLAYERS }} 位玩家</template>
-                    <template #content>
-                        <ul class="player-list">
-                            <li
-                                v-for="player in players"
-                                :key="player.id"
-                                class="player-item"
-                                :class="{ 'is-dead': !player.isAlive }"
-                            >
-                                <span class="player-identity">
-                                    <span class="player-name">{{ player.name }}</span>
-                                    <Tag v-if="player.id === hostId" value="房主" severity="warn" class="host-tag" />
-                                    <Tag
-                                        v-if="phase === 'GAME_OVER'"
-                                        :value="player.role === 'unassigned' ? '身份未知' : roleInfo[player.role].name"
-                                        severity="info"
-                                        class="role-tag"
-                                    />
-                                    <Tag
-                                        v-if="(
-                                            ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RESULT'].includes(phase)
-                                                && (player.isAlive || phase === 'DAY_VOTE_RESULT' || (
-                                                phase === 'DAY_DEATH_SPEECH'
-                                                && nightEliminatedPlayerIds.includes(player.id)
-                                            ))
-                                        )"
-                                        :value="player.isReady ? '已准备' : '未准备'"
-                                        :severity="player.isReady ? 'success' : 'secondary'"
-                                        class="ready-tag"
-                                    />
-                                </span>
-                                <Tag
-                                    :value="!player.isAlive
-                                        ? nightEliminatedPlayerIds.includes(player.id) ? '昨夜淘汰' : '淘汰'
-                                        : !player.isConnected ? '离线' : player.isMe ? '你' : '在线'"
-                                    :severity="!player.isAlive ? 'danger' : !player.isConnected ? 'secondary' : 'success'"
-                                />
-                            </li>
-                            <li v-if="players.length === 0" class="empty-state">加入房间后，玩家会显示在这里。</li>
-                        </ul>
-                    </template>
-                </Card>
+                <RoomMembers
+                    :players="players"
+                    :host-id="hostId"
+                    :phase="phase"
+                    :night-eliminated-player-ids="nightEliminatedPlayerIds"
+                    :max-players="MAX_PLAYERS"
+                />
             </aside>
         </main>
     </div>

@@ -142,6 +142,9 @@ function gameProgressFor(room, client) {
         nightEliminatedPlayerIds: room.nightEliminatedPlayerIds,
         voteResults: room.voteResults,
         roundWinner: room.roundWinner,
+        hunterShotPending: room.hunterShotPending,
+        hunterId: room.hunterShotPending ? room.hunterId : null,
+        hunterShotTargetId: room.hunterShotTargetId,
         selectedWolfTargetId: gamePlayer?.role === 'werewolf' ? room.wolfTargets.get(client.id) ?? null : null,
         selectedSaveTargetId: gamePlayer?.role === 'witch' ? room.witchSaveTargetId : null,
         selectedPoisonTargetId: gamePlayer?.role === 'witch' ? room.witchPoisonTargetId : null,
@@ -187,6 +190,7 @@ function phaseActionsComplete(room) {
     if (room.phase === 'DAY_VOTE') {
         return connectedPlayers(room).every(player => room.votes.has(player.id));
     }
+    if (room.phase === 'DAY_VOTE_RESULT') return !room.hunterShotPending;
     if (room.phase === 'GAME_OVER') return false;
     return true;
 }
@@ -231,7 +235,8 @@ function resolveRound(room) {
         targetId: player.id,
         targetName: player.name,
         votes: voteCounts.get(player.id) || 0,
-        eliminated: false
+        eliminated: false,
+        hunterShot: false
     }));
     const highestVoteCount = Math.max(0, ...voteCounts.values());
     const voteWinners = [...voteCounts.entries()].filter(([, count]) => count === highestVoteCount);
@@ -248,10 +253,16 @@ function resolveRound(room) {
     room.gamePlayers.forEach(player => {
         if (voteEliminatedIds.has(player.id)) player.isAlive = false;
     });
+    const eliminatedHunter = room.gamePlayers.find(player =>
+        voteEliminatedIds.has(player.id) && player.role === 'hunter'
+    );
+    room.hunterId = eliminatedHunter?.id ?? null;
+    room.hunterShotPending = Boolean(eliminatedHunter);
+    room.hunterShotTargetId = null;
     const voteEliminatedNames = room.gamePlayers
         .filter(player => voteEliminatedIds.has(player.id))
         .map(player => player.name);
-    room.roundWinner = winnerFor(room);
+    room.roundWinner = room.hunterShotPending ? null : winnerFor(room);
     room.phase = 'DAY_VOTE_RESULT';
     clearHiddenActionDelay(room);
     room.readyPlayerIds.clear();
@@ -271,6 +282,12 @@ function resolveRound(room) {
         ? `投票结果公示：${voteSummary}。投票淘汰：${voteEliminatedNames.join('、')}。`
         : `投票结果公示：${voteSummary || '无人得票'}。投票平票或无人得票，本轮无人因投票淘汰。`;
     broadcastRoomEvent(room, { playerId: null, text: result });
+    if (room.hunterShotPending) {
+        broadcastRoomEvent(room, {
+            playerId: null,
+            text: `${eliminatedHunter.name}（猎人）被投票出局，可以选择开枪带走一名玩家。`
+        });
+    }
     if (room.roundWinner) broadcastRoomEvent(room, { playerId: null, text: `游戏结束：${room.roundWinner}！` });
     else broadcastRoomEvent(room, { playerId: null, text: '确认投票结果后，游戏将继续进入下一轮。' });
     broadcastGameProgress(room);
@@ -313,6 +330,15 @@ function resolveNight(room) {
 
 function advanceGamePhase(room) {
     clearReadyCountdown(room);
+    if (room.hunterShotPending && room.hunterId === client.id) {
+        room.hunterShotPending = false;
+        room.roundWinner = winnerFor(room);
+        room.readyPlayerIds.clear();
+        room.gamePlayers.forEach(player => {
+            player.isReady = false;
+        });
+        broadcastRoomEvent(room, { playerId: null, text: '猎人离开了房间，放弃开枪。' });
+    }
     if (room.phase === 'DAY_VOTE') {
         resolveRound(room);
         return;
@@ -332,6 +358,9 @@ function advanceGamePhase(room) {
         room.phase = 'NIGHT_WEREWOLF';
         room.roundWinner = null;
         room.voteResults = [];
+        room.hunterId = null;
+        room.hunterShotPending = false;
+        room.hunterShotTargetId = null;
         room.nightEliminatedPlayerIds = [];
         room.readyPlayerIds.clear();
         room.gamePlayers.forEach(player => {
@@ -498,11 +527,13 @@ function leaveRoom(client) {
 
 function shuffledRoles(playerCount) {
     const wolfCount = playerCount >= 7 ? 2 : 1;
+    const hasHunter = playerCount >= 7;
     const roles = [
         ...Array(wolfCount).fill('werewolf'),
         'seer',
         'witch',
-        ...Array(playerCount - wolfCount - 2).fill('villager')
+        ...(hasHunter ? ['hunter'] : []),
+        ...Array(playerCount - wolfCount - 2 - Number(hasHunter)).fill('villager')
     ];
     for (let i = roles.length - 1; i > 0; i -= 1) {
         const j = crypto.randomInt(i + 1);
@@ -527,6 +558,9 @@ function beginGame(room, initiator) {
     room.votes = new Map();
     room.voteResults = [];
     room.roundWinner = null;
+    room.hunterId = null;
+    room.hunterShotPending = false;
+    room.hunterShotTargetId = null;
     room.eliminatedPlayerIds = [];
     room.nightEliminatedPlayerIds = [];
     const roles = shuffledRoles(room.players.length);
@@ -736,17 +770,66 @@ function handleMessage(client, message) {
             return;
         }
         const gamePlayer = room.gamePlayers.find(player => player.id === client.id);
+        const { action, targetId } = message;
+        if (typeof action !== 'string') {
+            sendError(client, '行动类型无效。');
+            return;
+        }
+        if (action === 'hunter-shot') {
+            if (
+                room.phase !== 'DAY_VOTE_RESULT'
+                || !room.hunterShotPending
+                || room.hunterId !== client.id
+                || gamePlayer?.role !== 'hunter'
+                || gamePlayer.isAlive
+            ) {
+                sendError(client, '当前无法使用猎人技能。');
+                return;
+            }
+            if (targetId !== null && (!validLivingTarget(room, targetId) || targetId === client.id)) {
+                sendError(client, '开枪目标无效。');
+                return;
+            }
+            room.hunterShotPending = false;
+            room.readyPlayerIds.clear();
+            room.gamePlayers.forEach(player => {
+                player.isReady = false;
+            });
+            if (targetId) {
+                const target = room.gamePlayers.find(player => player.id === targetId);
+                if (!target) {
+                    sendError(client, '开枪目标无效。');
+                    return;
+                }
+                target.isAlive = false;
+                room.hunterShotTargetId = target.id;
+                room.eliminatedPlayerIds.push(target.id);
+                const voteResult = room.voteResults.find(result => result.targetId === target.id);
+                if (voteResult) voteResult.hunterShot = true;
+                broadcastRoomEvent(room, {
+                    playerId: client.id,
+                    text: `猎人 ${gamePlayer.name} 含冤而死，开枪带走了 ${target.name}。`
+                });
+            } else {
+                broadcastRoomEvent(room, {
+                    playerId: client.id,
+                    text: `猎人 ${gamePlayer.name} 含冤而死，选择不开枪。`
+                });
+            }
+            room.roundWinner = winnerFor(room);
+            if (room.roundWinner) {
+                broadcastRoomEvent(room, { playerId: null, text: `游戏结束：${room.roundWinner}！` });
+            }
+            broadcastGameProgress(room);
+            startReadyCountdown(room);
+            return;
+        }
         if (!gamePlayer?.isAlive) {
             sendError(client, '淘汰玩家不能进行行动。');
             return;
         }
         if (gamePlayer.isReady) {
             sendError(client, '你已准备就绪，请先取消准备再修改行动。');
-            return;
-        }
-        const { action, targetId } = message;
-        if (typeof action !== 'string') {
-            sendError(client, '行动类型无效。');
             return;
         }
         if (action === 'wolf-target') {
@@ -1003,6 +1086,18 @@ webSocketServer.on('connection', (socket, request) => {
 
         if (room.started) {
             clearReadyCountdown(room);
+            if (room.hunterShotPending && room.hunterId === client.id) {
+                room.hunterShotPending = false;
+                room.roundWinner = winnerFor(room);
+                room.readyPlayerIds.clear();
+                room.gamePlayers.forEach(player => {
+                    player.isReady = false;
+                });
+                broadcastRoomEvent(room, {
+                    playerId: null,
+                    text: '猎人暂时离线，放弃开枪。'
+                });
+            }
             room.readyPlayerIds.delete(client.id);
             const gamePlayer = room.gamePlayers?.find(player => player.id === client.id);
             if (gamePlayer) {
