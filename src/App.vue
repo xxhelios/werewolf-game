@@ -45,6 +45,7 @@ const renameName = ref('');
 const roomCodeInput = ref('');
 const roomCode = ref<string | null>(null);
 const isSpectator = ref(false);
+const isTemporarilyAway = ref(false);
 const playerId = ref<string | null>(null);
 const players = ref<Player[]>([]);
 const roleCounts = ref<RoleCounts | null>(null);
@@ -258,6 +259,7 @@ const canReady = computed(() => {
         || (!player.isAlive && !canConfirmDeathSpeech && !canConfirmVoteResult)
         || !canConfirmPhase.value
         || countdownSeconds.value !== null
+        || isTemporarilyAway.value
         || connectionState.value !== 'connected') {
         return false;
     }
@@ -271,6 +273,7 @@ const canReady = computed(() => {
 });
 const canChooseAction = computed(() =>
     connectionState.value === 'connected'
+    && !isTemporarilyAway.value
     && countdownSeconds.value === null
     && Boolean(currentPlayer.value?.isAlive)
     && !currentPlayer.value?.isReady
@@ -372,6 +375,7 @@ function handleRoomMessage(message: ServerMessage): void {
         return;
     }
     if (message.type === 'left-room') {
+        isTemporarilyAway.value = false;
         roomError.value = '';
         savedResumeRoomCode = null;
         try {
@@ -413,6 +417,7 @@ function handleRoomMessage(message: ServerMessage): void {
         return;
     }
     if (message.type === 'room-state') {
+        isTemporarilyAway.value = false;
         roomCode.value = message.room.code;
         savedResumeRoomCode = message.room.code;
         try {
@@ -580,6 +585,7 @@ function connectToRoomService(): void {
         roomConnection = null;
         if (componentUnmounted) return;
         connectionState.value = 'disconnected';
+        if (isTemporarilyAway.value) return;
         if (!roomCode.value) {
             setRoomError('无法连接房间服务，正在尝试重新连接。');
         } else {
@@ -614,7 +620,20 @@ function startGame(): void {
 }
 
 function leaveRoom(): void {
-    if (roomCode.value) sendRoomMessage({ type: 'leave-room' });
+    if (!roomCode.value) return;
+    if (roomStarted.value && phase.value !== 'GAME_OVER') {
+        isTemporarilyAway.value = true;
+        roomConnection?.close();
+        return;
+    }
+    sendRoomMessage({ type: 'leave-room' });
+}
+
+function rejoinGame(): void {
+    if (!isTemporarilyAway.value) return;
+    isTemporarilyAway.value = false;
+    connectionState.value = 'connecting';
+    connectToRoomService();
 }
 
 function restartGame(): void {
@@ -847,8 +866,18 @@ onUnmounted(() => {
                             {{ roomError }}
                         </Message>
                         <Message v-if="connectionState !== 'connected'" severity="warn" :closable="false" class="room-message">
-                            房间连接已断开，正在使用当前玩家 ID 自动重连；游戏进度会在重连后恢复。
+                            {{ isTemporarilyAway
+                                ? '你已暂时离开本局。玩家身份和房间仍会保留，可随时重新加入。'
+                                : '房间连接已断开，正在使用当前玩家 ID 自动重连；游戏进度会在重连后恢复。' }}
                         </Message>
+                        <div v-if="isTemporarilyAway" class="action-row">
+                            <Button
+                                label="重新加入本局"
+                                icon="pi pi-sign-in"
+                                :disabled="connectionState === 'connecting'"
+                                @click="rejoinGame"
+                            />
+                        </div>
                         <Message v-if="isSpectator" severity="info" :closable="false">
                             观战模式 · 你可以查看全部玩家身份和实时游戏进度。
                         </Message>
@@ -931,7 +960,9 @@ onUnmounted(() => {
                                     icon="pi pi-bolt"
                                     severity="danger"
                                     :outlined="selectedHunterShotTargetId !== player.id"
-                                    :disabled="connectionState !== 'connected' || countdownSeconds !== null"
+                                    :disabled="connectionState !== 'connected'
+                                        || isTemporarilyAway
+                                        || countdownSeconds !== null"
                                     @click="selectedHunterShotTargetId = player.id"
                                 />
                             </div>
@@ -948,7 +979,9 @@ onUnmounted(() => {
                                 <Button
                                     label="不开枪"
                                     severity="secondary"
-                                    :disabled="connectionState !== 'connected' || countdownSeconds !== null"
+                                    :disabled="connectionState !== 'connected'
+                                        || isTemporarilyAway
+                                        || countdownSeconds !== null"
                                     @click="passHunterShot"
                                 />
                             </div>

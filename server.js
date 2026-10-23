@@ -590,6 +590,10 @@ function leaveRoom(client) {
         sendError(client, '你不在房间中。');
         return;
     }
+    if (room.started && room.phase !== 'GAME_OVER') {
+        client.socket?.close();
+        return;
+    }
     if (room.gamePlayers?.find(player => player.id === client.id)?.isSilenced) {
         sendError(client, '你已失去发言权。');
         return;
