@@ -21,6 +21,26 @@ function send(client, message) {
     }
 }
 
+function availableRoomsMessage() {
+    return {
+        type: 'available-rooms',
+        rooms: [...rooms.values()]
+            .filter(room => !room.started && room.players.length < MAX_PLAYERS)
+            .map(room => ({
+                code: room.code,
+                playerCount: room.players.length,
+                maxPlayers: MAX_PLAYERS
+            }))
+    };
+}
+
+function broadcastAvailableRooms() {
+    const message = JSON.stringify(availableRoomsMessage());
+    webSocketServer.clients.forEach(socket => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(message);
+    });
+}
+
 function phaseParticipants(room) {
     const livingOnlinePlayers = connectedPlayers(room);
     if (room.phase === 'DAY_VOTE_RESULT') {
@@ -570,6 +590,7 @@ function enterRoom(client, name, room) {
         playerId: client.id,
         text: room.players.length === 1 ? `${name} 创建了房间。` : `${name} 加入了房间。`
     });
+    broadcastAvailableRooms();
 }
 
 function leaveRoom(client) {
@@ -619,6 +640,7 @@ function leaveRoom(client) {
 
     if (room.players.length === 0 && !room.started) {
         rooms.delete(room.code);
+        broadcastAvailableRooms();
         return;
     }
 
@@ -638,6 +660,7 @@ function leaveRoom(client) {
     broadcastRoomState(room);
     if (room.started) broadcastGameProgress(room);
     broadcastRoomEvent(room, { playerId: null, text: '一名玩家退出了房间。' });
+    broadcastAvailableRooms();
     startReadyCountdown(room);
 }
 
@@ -726,11 +749,17 @@ function beginGame(room, initiator) {
         playerId: initiator.id,
         text: `${initiator.name}${room.round > 1 ? ' 重新' : ' '}开始了游戏。`
     });
+    broadcastAvailableRooms();
 }
 
 function handleMessage(client, message) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) {
         sendError(client, '无效的请求。');
+        return;
+    }
+
+    if (message.type === 'list-rooms') {
+        send(client, availableRoomsMessage());
         return;
     }
 

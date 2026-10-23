@@ -9,7 +9,7 @@ import AppHeader from './components/AppHeader.vue';
 import GameMemo from './components/GameMemo.vue';
 import RoomMembers from './components/RoomMembers.vue';
 import { parseServerMessage } from './network/protocol';
-import type { GamePlayer, RoomPlayer, ServerMessage, WolfIntention } from './network/protocol';
+import type { AvailableRoom, GamePlayer, RoomPlayer, ServerMessage, WolfIntention } from './network/protocol';
 import { ROLE_INFO } from './types';
 import type { ActiveGamePhase, ConnectionState, GamePhase, MemoEntry, Player, Role, RoleCounts, VoteResult, WitchPotions } from './types';
 
@@ -29,7 +29,7 @@ const FRUIT_NAMES = [
     '无花果', '杨梅', '桑葚', '枇杷', '橄榄', '牛油果'
 ];
 const ANIMAL_NAMES = [
-    '熊猫', '狐狸', '兔子', '老虎', '狮子', '企鹅', '海豚', '鲸鱼', '水獭', '松鼠', '猫咪',
+    '熊猫', '兔子', '老虎', '狮子', '企鹅', '海豚', '鲸鱼', '水獭', '松鼠', '猫咪',
     '小狗', '考拉', '袋鼠', '刺猬', '浣熊', '树懒', '鹿', '河马', '长颈鹿', '斑马',
     '猫头鹰', '鹦鹉', '海豹', '鲸鱼', '青蛙', '乌龟', '仓鼠', '羊驼', '小熊', '小狼',
     '蜜蜂', '蝴蝶', '火烈鸟', '水豚', '猕猴', '小马'
@@ -48,6 +48,7 @@ const isSpectator = ref(false);
 const isTemporarilyAway = ref(false);
 const playerId = ref<string | null>(null);
 const players = ref<Player[]>([]);
+const availableRooms = ref<AvailableRoom[]>([]);
 const roleCounts = ref<RoleCounts | null>(null);
 const wolfIntentions = ref<WolfIntention[]>([]);
 const phase = ref<GamePhase>('LOBBY');
@@ -349,6 +350,14 @@ function spectateRoom(): void {
     sendRoomMessage({ type: 'spectate-room', code });
 }
 
+function refreshAvailableRooms(): void {
+    sendRoomMessage({ type: 'list-rooms' });
+}
+
+function selectAvailableRoom(code: string): void {
+    roomCodeInput.value = code;
+}
+
 function handleRoomMessage(message: ServerMessage): void {
     if (message.type === 'connected') {
         const previousPlayerId = playerId.value;
@@ -365,6 +374,7 @@ function handleRoomMessage(message: ServerMessage): void {
             setRoomError('无法保存玩家身份，刷新后将无法自动返回房间。');
         }
         connectionState.value = 'connected';
+        refreshAvailableRooms();
         if (isSpectator.value && roomCode.value) {
             sendRoomMessage({ type: 'spectate-room', code: roomCode.value });
         }
@@ -372,6 +382,10 @@ function handleRoomMessage(message: ServerMessage): void {
     }
     if (message.type === 'error') {
         setRoomError(message.message);
+        return;
+    }
+    if (message.type === 'available-rooms') {
+        availableRooms.value = message.rooms;
         return;
     }
     if (message.type === 'left-room') {
@@ -810,6 +824,36 @@ onUnmounted(() => {
                             <Button label="加入房间" icon="pi pi-sign-in" severity="secondary" @click="joinRoom" />
                             <Button label="观战" icon="pi pi-eye" severity="help" outlined @click="spectateRoom" />
                         </div>
+                        <section class="available-rooms" aria-label="当前可加入的房间">
+                            <div class="available-rooms-heading">
+                                <h3>当前可加入的房间</h3>
+                                <Button
+                                    label="刷新"
+                                    icon="pi pi-refresh"
+                                    severity="secondary"
+                                    text
+                                    size="small"
+                                    :disabled="connectionState !== 'connected'"
+                                    @click="refreshAvailableRooms"
+                                />
+                            </div>
+                            <div v-if="availableRooms.length" class="available-room-list">
+                                <Button
+                                    v-for="room in availableRooms"
+                                    :key="room.code"
+                                    :label="`${room.code} · ${room.playerCount}/${room.maxPlayers} 人`"
+                                    severity="secondary"
+                                    outlined
+                                    size="small"
+                                    :class="{ 'selected-room': roomCodeInput === room.code }"
+                                    @click="selectAvailableRoom(room.code)"
+                                />
+                            </div>
+                            <p v-else class="available-room-empty">
+                                {{ connectionState === 'connected' ? '目前没有可加入的房间。' : '连接房间服务后显示。' }}
+                            </p>
+                            <small>点击房间号填入上方输入框，再选择加入游戏或观战。</small>
+                        </section>
                         <Message v-if="roomError" severity="error" :closable="false" class="room-message">
                             {{ roomError }}
                         </Message>
@@ -1257,6 +1301,45 @@ button, input {
     flex: 1;
     border-top: 1px solid var(--p-surface-700);
     content: "";
+}
+
+.available-rooms {
+    display: grid;
+    gap: 10px;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--p-surface-800);
+}
+
+.available-rooms-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.available-rooms-heading h3 {
+    margin: 0;
+    color: var(--p-surface-200);
+    font-size: 0.95rem;
+}
+
+.available-room-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.available-room-list .selected-room {
+    border-color: var(--p-primary-400);
+    color: var(--p-primary-200);
+}
+
+.available-room-empty,
+.available-rooms > small {
+    margin: 0;
+    color: var(--p-surface-400);
+    font-size: 0.82rem;
 }
 
 .join-form {

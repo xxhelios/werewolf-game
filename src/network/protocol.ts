@@ -24,8 +24,15 @@ export interface WolfIntention {
     targetId: string | null;
 }
 
+export interface AvailableRoom {
+    code: string;
+    playerCount: number;
+    maxPlayers: number;
+}
+
 export type ServerMessage =
     | { type: 'connected'; playerId: string }
+    | { type: 'available-rooms'; rooms: AvailableRoom[] }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
     | { type: 'spectator-joined'; code: string }
     | { type: 'left-room' }
@@ -78,6 +85,19 @@ function isNullableRole(value: unknown): value is Role | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isAvailableRoom(value: unknown): value is AvailableRoom {
+    return isRecord(value)
+        && typeof value.code === 'string'
+        && /^[A-Z0-9]{4}$/.test(value.code)
+        && typeof value.playerCount === 'number'
+        && Number.isInteger(value.playerCount)
+        && value.playerCount >= 0
+        && typeof value.maxPlayers === 'number'
+        && Number.isInteger(value.maxPlayers)
+        && value.maxPlayers > 0
+        && value.playerCount < value.maxPlayers;
 }
 
 function isRole(value: unknown): value is Role {
@@ -147,6 +167,16 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
 
     if (value.type === 'connected' && typeof value.playerId === 'string') {
         return { type: 'connected', playerId: value.playerId };
+    }
+    if (
+        value.type === 'available-rooms'
+        && Array.isArray(value.rooms)
+        && value.rooms.every(isAvailableRoom)
+    ) {
+        return {
+            type: 'available-rooms',
+            rooms: value.rooms
+        };
     }
     if (value.type === 'left-room') return { type: 'left-room' };
     if (value.type === 'spectator-joined' && typeof value.code === 'string') {
