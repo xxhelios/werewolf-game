@@ -1018,7 +1018,7 @@ function handleMessage(client, message) {
                 return;
             }
             const target = room.gamePlayers.find(player => player.id === targetId && player.isAlive);
-            if (!target || target.role === 'werewolf') {
+            if (!target) {
                 sendError(client, '袭击目标无效。');
                 return;
             }

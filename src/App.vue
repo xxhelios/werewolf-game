@@ -84,9 +84,9 @@ const FRUIT_NAMES = [
     '无花果', '杨梅', '桑葚', '枇杷', '橄榄', '牛油果'
 ];
 const ANIMAL_NAMES = [
-    '熊猫', '狐狸', '兔子', '老虎', '狮子', '企鹅', '海豚', '水獭', '松鼠', '猫咪',
+    '熊猫', '狐狸', '兔子', '老虎', '狮子', '企鹅', '海豚', '鲸鱼', '水獭', '松鼠', '猫咪',
     '小狗', '考拉', '袋鼠', '刺猬', '浣熊', '树懒', '鹿', '河马', '长颈鹿', '斑马',
-    '猫头鹰', '鹦鹉', '海豹', '鲸鱼', '青蛙', '乌龟', '仓鼠', '羊驼', '小熊', '狼崽',
+    '猫头鹰', '鹦鹉', '海豹', '鲸鱼', '青蛙', '乌龟', '仓鼠', '羊驼', '小熊', '小狼',
     '蜜蜂', '蝴蝶', '火烈鸟', '水豚', '猕猴', '小马'
 ];
 const randomNameIndex = (length: number): number =>
@@ -219,7 +219,7 @@ const phaseDescription = computed(() => {
     if (phase.value === 'DAY_DEATH_SPEECH') return '昨夜淘汰的玩家正在发言，请稍候。';
     if (phase.value === 'NIGHT_WEREWOLF') {
         return currentPlayer.value?.role === 'werewolf'
-            ? '查看狼人伙伴的目标意向；所有在线狼人选择同一目标后，才能确认行动。'
+            ? '可以袭击任意存活玩家（包括狼人伙伴）；所有在线狼人选择同一目标后，才能确认行动。'
             : '狼人行动中，请等待狼人完成行动。';
     }
     if (phase.value === 'NIGHT_WITCH') {
@@ -237,6 +237,7 @@ const phaseDescription = computed(() => {
     return '本局游戏已结束。';
 });
 const aliveTargets = computed(() => players.value.filter(player => player.isAlive && !player.isMe));
+const livingWolfTargets = computed(() => players.value.filter(player => player.isAlive));
 const voteTargets = computed(() => phase.value === 'DAY_VOTE_RUNOFF'
     ? aliveTargets.value.filter(player => runoffCandidateIds.value.includes(player.id))
     : aliveTargets.value
@@ -1201,12 +1202,12 @@ onUnmounted(() => {
                         </div>
                         <div v-else-if="phase === 'NIGHT_WEREWOLF' && currentPlayer?.role === 'werewolf' && currentPlayer.isAlive" class="action-row">
                             <div
-                                v-for="player in aliveTargets"
+                                v-for="player in livingWolfTargets"
                                 :key="player.id"
                                 class="wolf-target-option"
                             >
                                 <Button
-                                    :label="`袭击 [${player.name}]`"
+                                    :label="player.isMe ? '袭击自己' : `袭击 [${player.name}]`"
                                     icon="pi pi-bolt"
                                     severity="danger"
                                     :outlined="selectedWolfTargetId !== player.id"
