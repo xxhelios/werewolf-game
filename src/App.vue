@@ -20,6 +20,7 @@ const MAX_MEMO_ENTRIES = 200;
 const ROOM_CODE_PATTERN = /^[A-Z0-9]{4}$/;
 const PLAYER_ID_STORAGE_KEY = 'werewolf-player-id';
 const ROOM_CODE_STORAGE_KEY = 'werewolf-room-code';
+const MANUAL_REJOIN_STORAGE_KEY = 'werewolf-manual-rejoin';
 const INVALID_SERVER_MESSAGE_ERROR = '收到无法处理的房间服务消息，请刷新页面重试。';
 const PLAYER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -41,6 +42,7 @@ const generateDefaultPlayerName = (): string =>
     `${FRUIT_NAMES[randomNameIndex(FRUIT_NAMES.length)]}${ANIMAL_NAMES[randomNameIndex(ANIMAL_NAMES.length)]}`;
 
 const playerName = ref(generateDefaultPlayerName());
+const playerIdInput = ref('');
 const createRoomCodeInput = ref('');
 const renameName = ref('');
 const roomCodeInput = ref('');
@@ -81,6 +83,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 let componentUnmounted = false;
 let savedResumeRoomCode: string | null = null;
+let pendingLobbyAction: Record<string, string> | null = null;
 
 const hostId = ref<string | null>(null);
 const isHost = computed(() => !isSpectator.value && Boolean(playerId.value) && hostId.value === playerId.value);
@@ -325,8 +328,7 @@ function createRoom(): void {
         setRoomError('自定义房间码需为 4 位字母或数字；留空则自动生成。');
         return;
     }
-    setRoomError('');
-    sendRoomMessage({ type: 'create-room', name, code });
+    prepareLobbyAction({ type: 'create-room', name, code });
 }
 
 function joinRoom(): void {
@@ -337,8 +339,7 @@ function joinRoom(): void {
         setRoomError('请输入有效的 4 位房间码。');
         return;
     }
-    setRoomError('');
-    sendRoomMessage({ type: 'join-room', name, code });
+    prepareLobbyAction({ type: 'join-room', name, code }, code);
 }
 
 function spectateRoom(): void {
@@ -347,8 +348,61 @@ function spectateRoom(): void {
         setRoomError('请输入有效的 4 位房间码。');
         return;
     }
+    prepareLobbyAction({ type: 'spectate-room', code });
+}
+
+function prepareLobbyAction(
+    action: Record<string, string>,
+    resumeRoomCode: string | null = null
+): void {
+    const id = playerIdInput.value.trim();
+    if (!PLAYER_ID_PATTERN.test(id)) {
+        setRoomError('请输入有效的玩家 ID。');
+        return;
+    }
     setRoomError('');
-    sendRoomMessage({ type: 'spectate-room', code });
+    const currentPlayerId = playerId.value;
+    pendingLobbyAction = action;
+    playerId.value = id;
+    try {
+        localStorage.setItem(PLAYER_ID_STORAGE_KEY, id);
+        if (resumeRoomCode) {
+            savedResumeRoomCode = resumeRoomCode;
+        } else {
+            savedResumeRoomCode = null;
+        }
+    } catch (error) {
+        console.error('Unable to save player identity.', error);
+        setRoomError('无法保存玩家 ID，浏览器存储不可用。');
+        pendingLobbyAction = null;
+        return;
+    }
+
+    if (roomConnection?.readyState === WebSocket.OPEN
+        && connectionState.value === 'connected'
+        && currentPlayerId === id
+        && !isTemporarilyAway.value) {
+        const message = pendingLobbyAction;
+        pendingLobbyAction = null;
+        sendRoomMessage(message);
+        return;
+    }
+    if (roomConnection) {
+        roomConnection.onclose = null;
+        roomConnection.close();
+        roomConnection = null;
+    }
+    connectionState.value = 'connecting';
+    connectToRoomService();
+}
+
+function clearManualRejoinFlag(): void {
+    try {
+        localStorage.removeItem(MANUAL_REJOIN_STORAGE_KEY);
+    } catch (error) {
+        console.error('Unable to clear manual rejoin state.', error);
+        setRoomError('无法清除暂离状态。');
+    }
 }
 
 function refreshAvailableRooms(): void {
@@ -361,11 +415,13 @@ function selectAvailableRoom(code: string): void {
 
 function handleRoomMessage(message: ServerMessage): void {
     if (message.type === 'connected') {
+        const requestedPlayerId = playerIdInput.value;
         const previousPlayerId = playerId.value;
         playerId.value = message.playerId;
+        playerIdInput.value = message.playerId;
         try {
             localStorage.setItem(PLAYER_ID_STORAGE_KEY, message.playerId);
-            if (previousPlayerId && previousPlayerId !== message.playerId) {
+            if (previousPlayerId && previousPlayerId !== message.playerId && !pendingLobbyAction) {
                 savedResumeRoomCode = null;
                 localStorage.removeItem(ROOM_CODE_STORAGE_KEY);
                 setRoomError('玩家身份与已保存的房间信息不匹配，请重新加入房间。');
@@ -376,6 +432,35 @@ function handleRoomMessage(message: ServerMessage): void {
         }
         connectionState.value = 'connected';
         refreshAvailableRooms();
+        if (pendingLobbyAction) {
+            const action = pendingLobbyAction;
+            pendingLobbyAction = null;
+            if (message.playerId !== requestedPlayerId) {
+                playerId.value = requestedPlayerId;
+                playerIdInput.value = requestedPlayerId;
+                try {
+                    localStorage.setItem(PLAYER_ID_STORAGE_KEY, requestedPlayerId);
+                } catch (error) {
+                    console.error('Unable to restore requested player identity.', error);
+                }
+                if (roomConnection) {
+                    roomConnection.onclose = null;
+                    roomConnection.close();
+                    roomConnection = null;
+                }
+                connectionState.value = 'disconnected';
+                setRoomError('服务器返回的玩家 ID 与输入的 ID 不同，请确认 ID 后重试。');
+                return;
+            }
+            if (message.resumedRoom && action.type === 'join-room') {
+                return;
+            }
+            if (message.resumedRoom) {
+                setRoomError('该玩家 ID 已在另一个房间中，请先恢复原房间。');
+                return;
+            }
+            sendRoomMessage(action);
+        }
         if (isSpectator.value && roomCode.value) {
             sendRoomMessage({ type: 'spectate-room', code: roomCode.value });
         }
@@ -395,6 +480,7 @@ function handleRoomMessage(message: ServerMessage): void {
         savedResumeRoomCode = null;
         try {
             localStorage.removeItem(ROOM_CODE_STORAGE_KEY);
+            localStorage.removeItem(MANUAL_REJOIN_STORAGE_KEY);
         } catch (error) {
             console.error('Unable to clear saved room identity.', error);
             setRoomError('无法清除已保存的房间信息。');
@@ -433,6 +519,8 @@ function handleRoomMessage(message: ServerMessage): void {
     }
     if (message.type === 'room-state') {
         isTemporarilyAway.value = false;
+        pendingLobbyAction = null;
+        clearManualRejoinFlag();
         roomCode.value = message.room.code;
         savedResumeRoomCode = message.room.code;
         try {
@@ -646,17 +734,27 @@ function leaveRoom(): void {
     if (!roomCode.value) return;
     if (roomStarted.value && phase.value !== 'GAME_OVER') {
         isTemporarilyAway.value = true;
-        roomConnection?.close();
+        roomCodeInput.value = roomCode.value;
+        try {
+            localStorage.setItem(MANUAL_REJOIN_STORAGE_KEY, 'true');
+            localStorage.setItem(ROOM_CODE_STORAGE_KEY, roomCode.value);
+        } catch (error) {
+            console.error('Unable to save room rejoin information.', error);
+            setRoomError('无法保存房间号，暂离后可能无法恢复本局。');
+        }
+        if (playerId.value) playerIdInput.value = playerId.value;
+        roomCode.value = null;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        if (roomConnection) {
+            roomConnection.onclose = null;
+            roomConnection.close();
+            roomConnection = null;
+        }
+        connectionState.value = 'disconnected';
         return;
     }
     sendRoomMessage({ type: 'leave-room' });
-}
-
-function rejoinGame(): void {
-    if (!isTemporarilyAway.value) return;
-    isTemporarilyAway.value = false;
-    connectionState.value = 'connecting';
-    connectToRoomService();
 }
 
 function restartGame(): void {
@@ -756,14 +854,22 @@ onMounted(() => {
         return;
     }
     try {
-        const savedRoomCode = localStorage.getItem(ROOM_CODE_STORAGE_KEY);
-        savedResumeRoomCode = savedRoomCode && ROOM_CODE_PATTERN.test(savedRoomCode)
-            ? savedRoomCode
-            : null;
         const savedPlayerId = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
         playerId.value = savedPlayerId && PLAYER_ID_PATTERN.test(savedPlayerId)
             ? savedPlayerId
             : crypto.randomUUID();
+        playerIdInput.value = playerId.value;
+        const savedRoomCode = localStorage.getItem(ROOM_CODE_STORAGE_KEY);
+        savedResumeRoomCode = savedRoomCode && ROOM_CODE_PATTERN.test(savedRoomCode)
+            ? savedRoomCode
+            : null;
+        if (localStorage.getItem(MANUAL_REJOIN_STORAGE_KEY) === 'true') {
+            isTemporarilyAway.value = true;
+            roomCodeInput.value = savedResumeRoomCode ?? '';
+            savedResumeRoomCode = null;
+            connectionState.value = 'disconnected';
+            return;
+        }
     } catch (error) {
         console.error('Unable to access saved player identity.', error);
         connectionState.value = 'failed';
@@ -792,7 +898,7 @@ onUnmounted(() => {
         />
         <main class="game-layout">
             <section class="game-column">
-                <Card v-if="!roomCode" class="game-card room-entry">
+                <Card v-if="!roomCode || isTemporarilyAway" class="game-card room-entry">
                     <template #title>加入狼人杀房间</template>
                     <template #subtitle>创建一个房间并分享房间码，或输入好友分享给你的房间码。</template>
                     <template #content>
@@ -806,6 +912,17 @@ onUnmounted(() => {
                                     placeholder="已随机生成水果+动物昵称，可自行修改"
                                     class="full-width"
                                     @keyup.enter="createRoom"
+                                />
+                            </div>
+                            <div class="name-field">
+                                <label class="field-label" for="player-id">玩家 ID（用于恢复身份）</label>
+                                <InputText
+                                    id="player-id"
+                                    v-model="playerIdInput"
+                                    maxlength="36"
+                                    placeholder="保留上一局玩家 ID"
+                                    class="full-width"
+                                    autocomplete="off"
                                 />
                             </div>
                             <div class="name-field">
@@ -923,14 +1040,6 @@ onUnmounted(() => {
                                 ? '你已暂时离开本局。玩家身份和房间仍会保留，可随时重新加入。'
                                 : '房间连接已断开，正在使用当前玩家 ID 自动重连；游戏进度会在重连后恢复。' }}
                         </Message>
-                        <div v-if="isTemporarilyAway" class="action-row">
-                            <Button
-                                label="重新加入本局"
-                                icon="pi pi-sign-in"
-                                :disabled="connectionState === 'connecting'"
-                                @click="rejoinGame"
-                            />
-                        </div>
                         <Message v-if="isSpectator" severity="info" :closable="false">
                             观战模式 · 你可以查看全部玩家身份和实时游戏进度。
                         </Message>

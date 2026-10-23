@@ -31,7 +31,7 @@ export interface AvailableRoom {
 }
 
 export type ServerMessage =
-    | { type: 'connected'; playerId: string }
+    | { type: 'connected'; playerId: string; resumedRoom: boolean }
     | { type: 'available-rooms'; rooms: AvailableRoom[] }
     | { type: 'room-state'; room: { code: string; hostId: string; players: RoomPlayer[] } }
     | { type: 'spectator-joined'; code: string }
@@ -165,8 +165,12 @@ function isGamePlayerList(value: unknown): value is GamePlayer[] {
 export function parseServerMessage(value: unknown): ServerMessage | null {
     if (!isRecord(value) || typeof value.type !== 'string') return null;
 
-    if (value.type === 'connected' && typeof value.playerId === 'string') {
-        return { type: 'connected', playerId: value.playerId };
+    if (
+        value.type === 'connected'
+        && typeof value.playerId === 'string'
+        && typeof value.resumedRoom === 'boolean'
+    ) {
+        return { type: 'connected', playerId: value.playerId, resumedRoom: value.resumedRoom };
     }
     if (
         value.type === 'available-rooms'

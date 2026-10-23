@@ -1281,7 +1281,11 @@ webSocketServer.on('connection', (socket, request) => {
     client.socket = socket;
     if (previousSocket && previousSocket !== socket) previousSocket.close();
 
-    send(client, { type: 'connected', playerId: client.id });
+    send(client, {
+        type: 'connected',
+        playerId: client.id,
+        resumedRoom: Boolean(existingPlayer)
+    });
     if (existingPlayer) {
         broadcastRoomState(existingPlayer.room);
         if (existingPlayer.room.started) {
