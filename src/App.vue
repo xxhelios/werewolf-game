@@ -937,6 +937,34 @@ function toggleReady(): void {
     sendRoomMessage({ type: 'set-ready', isReady: !player.isReady });
 }
 
+const NIGHT_PHASES: GamePhase[] = ['NIGHT_LOVER_PICK', 'NIGHT_WEREWOLF', 'NIGHT_LOVER', 'NIGHT_WITCH', 'NIGHT_SEER'];
+const DAY_PHASES: GamePhase[] = ['DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RUNOFF', 'DAY_VOTE_RESULT'];
+const sceneBanner = ref<'night' | 'day' | null>(null);
+let sceneBannerTimer: ReturnType<typeof setTimeout> | null = null;
+
+const sceneTheme = computed(() => {
+    if (NIGHT_PHASES.includes(phase.value)) return 'night';
+    if (DAY_PHASES.includes(phase.value)) return 'day';
+    return 'neutral';
+});
+
+function showSceneBanner(kind: 'night' | 'day'): void {
+    sceneBanner.value = kind;
+    if (sceneBannerTimer) clearTimeout(sceneBannerTimer);
+    sceneBannerTimer = setTimeout(() => {
+        sceneBanner.value = null;
+        sceneBannerTimer = null;
+    }, 2800);
+}
+
+watch(phase, (next, previous) => {
+    const wasNight = NIGHT_PHASES.includes(previous);
+    const isNight = NIGHT_PHASES.includes(next);
+    if (isNight && !wasNight) showSceneBanner('night');
+    else if (wasNight && DAY_PHASES.includes(next)) showSceneBanner('day');
+    else if (!isNight && !DAY_PHASES.includes(next)) sceneBanner.value = null;
+});
+
 watch(roomCodeInput, value => {
     roomCodeInput.value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
 });
@@ -979,13 +1007,19 @@ onMounted(() => {
 onUnmounted(() => {
     componentUnmounted = true;
     if (reconnectTimer) clearTimeout(reconnectTimer);
+    if (sceneBannerTimer) clearTimeout(sceneBannerTimer);
     stopRoomListWatcher();
     roomConnection?.close();
 });
 </script>
 
 <template>
-    <div class="app-shell">
+    <div class="app-shell" :class="`scene-${sceneTheme}`">
+        <Transition name="scene-banner">
+            <div v-if="sceneBanner" class="scene-banner" :class="`scene-banner-${sceneBanner}`" aria-live="assertive">
+                <span>{{ sceneBanner === 'night' ? '🌙 天黑请闭眼' : '☀️ 天亮请睁眼' }}</span>
+            </div>
+        </Transition>
         <AppHeader
             :room-code="roomCode"
             :room-status="roomStatus"
@@ -1499,6 +1533,52 @@ button, input {
 
 .app-shell {
     min-height: 100vh;
+    background: #0e0e18;
+    transition: background-color 1.2s ease, filter 1.2s ease;
+}
+
+.app-shell.scene-night {
+    background: #010104;
+    filter: brightness(0.82);
+}
+
+.app-shell.scene-day {
+    background: #3b4568;
+    filter: brightness(1.12);
+}
+
+.scene-banner {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    font-size: clamp(2rem, 8vw, 4.5rem);
+    font-weight: 800;
+    letter-spacing: 0.15em;
+    text-shadow: 0 4px 24px rgba(0, 0, 0, 0.6);
+}
+
+.scene-banner-night {
+    background: rgba(0, 0, 8, 0.82);
+    color: #c7d2fe;
+}
+
+.scene-banner-day {
+    background: rgba(255, 236, 170, 0.5);
+    color: #fff7d6;
+}
+
+.scene-banner-enter-active,
+.scene-banner-leave-active {
+    transition: opacity 0.6s ease;
+}
+
+.scene-banner-enter-from,
+.scene-banner-leave-to {
+    opacity: 0;
 }
 
 .topbar {
