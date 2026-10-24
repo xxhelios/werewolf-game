@@ -198,6 +198,7 @@ const phaseDescription = computed(() => {
             : '恋爱脑行动中，请等待恋爱脑完成行动。';
     }
     if (phase.value === 'DAY_VOTE') return '请选择一位玩家投票，或不选择目标直接确认弃权。投票内容不会公开。';
+    if (phase.value === 'DAY_VOTE_RUNOFF' && isRunoffCandidate.value) return '你是平票候选人，不能参与本轮加赛投票，请等待其他玩家投票。';
     if (phase.value === 'DAY_VOTE_RUNOFF') return '最高票出现平票。请仅在下方平票候选人中重新投票，或确认弃权。';
     return '本局游戏已结束。';
 });
@@ -207,12 +208,16 @@ const voteTargets = computed(() => phase.value === 'DAY_VOTE_RUNOFF'
     ? aliveTargets.value.filter(player => runoffCandidateIds.value.includes(player.id))
     : aliveTargets.value
 );
+const isRunoffCandidate = computed(() => phase.value === 'DAY_VOTE_RUNOFF'
+    && runoffCandidateIds.value.includes(currentPlayer.value?.id ?? '')
+);
 const canStartGame = computed(() =>
     isHost.value && !roomStarted.value && players.value.length >= MIN_PLAYERS
 );
 const phaseReadyPlayers = computed(() => players.value.filter(player =>
     player.isConnected
     && player.isAlive
+    && !(phase.value === 'DAY_VOTE_RUNOFF' && runoffCandidateIds.value.includes(player.id))
 ));
 const readyPlayerCount = computed(() => phaseReadyPlayers.value.filter(player => player.isReady).length);
 const connectedPlayerCount = computed(() => phaseReadyPlayers.value.length);
@@ -253,9 +258,8 @@ const canConfirmPhase = computed(() => {
     if (phase.value === 'NIGHT_WITCH') return player.role === 'witch';
     if (phase.value === 'NIGHT_SEER') return player.role === 'seer';
     if (phase.value === 'NIGHT_LOVER' || phase.value === 'NIGHT_LOVER_PICK') return player.role === 'lover';
-    return phase.value === 'ROLE_REVEAL'
-        || phase.value === 'DAY_VOTE'
-        || phase.value === 'DAY_VOTE_RUNOFF';
+    if (phase.value === 'DAY_VOTE_RUNOFF') return !isRunoffCandidate.value;
+    return phase.value === 'ROLE_REVEAL' || phase.value === 'DAY_VOTE';
 });
 const phaseStatusMessages: Partial<Record<GamePhase, string>> = {
     NIGHT_WEREWOLF: '狼人行动中',
@@ -264,7 +268,10 @@ const phaseStatusMessages: Partial<Record<GamePhase, string>> = {
     NIGHT_LOVER_PICK: '恋爱脑行动中',
     NIGHT_LOVER: '恋爱脑行动中'
 };
-const phaseStatusMessage = computed(() => phaseStatusMessages[phase.value] ?? '');
+const phaseStatusMessage = computed(() => phase.value === 'DAY_VOTE_RUNOFF' && isRunoffCandidate.value
+    ? '平票候选人无需参与本轮加赛投票。'
+    : phaseStatusMessages[phase.value] ?? ''
+);
 const canReady = computed(() => {
     const player = currentPlayer.value;
     const canConfirmDeathSpeech = Boolean(
@@ -1422,13 +1429,13 @@ onUnmounted(() => {
                             {{ loverNotice }}
                         </Message>
                         <Message
-                            v-if="phase === 'DAY_VOTE_RUNOFF' && currentPlayer?.isAlive"
+                            v-if="phase === 'DAY_VOTE_RUNOFF' && currentPlayer?.isAlive && !isRunoffCandidate"
                             severity="warn"
                             :closable="false"
                         >
                             平票加赛：本轮只能在平票候选人中选择。
                         </Message>
-                        <div v-if="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && currentPlayer?.isAlive" class="action-row">
+                        <div v-if="['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(phase) && currentPlayer?.isAlive && !isRunoffCandidate" class="action-row">
                             <Button
                                 v-for="player in voteTargets"
                                 :key="player.id"

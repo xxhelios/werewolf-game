@@ -52,7 +52,10 @@ function phaseParticipants(room) {
             && player.socket?.readyState === WebSocket.OPEN
         );
     }
-    if (room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF') {
+    if (room.phase === 'DAY_VOTE_RUNOFF') {
+        return livingOnlinePlayers.filter(player => !room.runoffCandidateIds?.includes(player.id));
+    }
+    if (room.phase === 'DAY_VOTE') {
         return livingOnlinePlayers;
     }
     const actingRole = {
@@ -1165,7 +1168,12 @@ function handleMessage(client, message) {
             sendError(client, '请等待所有在线狼人统一袭击目标后再确认。');
             return;
         }
-        if (message.isReady && ['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(room.phase) && !room.votes.has(client.id)) {
+        if (
+            message.isReady
+            && ['DAY_VOTE', 'DAY_VOTE_RUNOFF'].includes(room.phase)
+            && phaseParticipants(room).some(player => player.id === client.id)
+            && !room.votes.has(client.id)
+        ) {
             room.votes.set(client.id, null);
         }
         updateReadiness(room, client, message.isReady);
@@ -1346,6 +1354,12 @@ function handleMessage(client, message) {
             room.loverChoice = choice;
         } else if (action === 'vote') {
             const isVotingPhase = room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF';
+            if (isVotingPhase && !phaseParticipants(room).some(player => player.id === client.id)) {
+                sendError(client, room.phase === 'DAY_VOTE_RUNOFF'
+                    ? '平票候选人不能参与加赛投票。'
+                    : '当前阶段无投票权。');
+                return;
+            }
             const targetIsEligibleForRunoff = room.phase !== 'DAY_VOTE_RUNOFF'
                 || room.runoffCandidateIds?.includes(targetId);
             if (!isVotingPhase || !targetIsEligibleForRunoff
