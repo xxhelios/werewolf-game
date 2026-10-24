@@ -1077,6 +1077,9 @@ onUnmounted(() => {
                             观战模式 · 你可以查看全部玩家身份和实时游戏进度。
                         </Message>
                         <div v-else class="role-card">
+                            <span v-if="currentPlayer" class="player-nickname">
+                                <i class="pi pi-user"></i>{{ currentPlayer.name }}
+                            </span>
                             <span class="eyebrow">你的底牌身份</span>
                             <strong>{{ roleDetails.name }}</strong>
                             <span>{{ roleDetails.tip }}</span>
@@ -1764,6 +1767,20 @@ button, input {
     border-radius: var(--p-border-radius-xl);
     background: linear-gradient(145deg, var(--p-surface-900), var(--p-surface-950));
     text-align: center;
+}
+
+.role-card .player-nickname {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 100%;
+    padding: 4px 16px;
+    border-radius: 999px;
+    background: var(--p-primary-700);
+    color: #fff;
+    font-size: 1.15rem;
+    font-weight: 700;
+    overflow-wrap: anywhere;
 }
 
 .role-card .eyebrow {
