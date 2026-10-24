@@ -391,7 +391,7 @@ function prepareLobbyAction(
     pendingLobbyAction = action;
     playerId.value = id;
     try {
-        localStorage.setItem(PLAYER_ID_STORAGE_KEY, id);
+        sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, id);
         if (resumeRoomCode) {
             savedResumeRoomCode = resumeRoomCode;
         } else {
@@ -424,7 +424,7 @@ function prepareLobbyAction(
 
 function clearManualRejoinFlag(): void {
     try {
-        localStorage.removeItem(MANUAL_REJOIN_STORAGE_KEY);
+        sessionStorage.removeItem(MANUAL_REJOIN_STORAGE_KEY);
     } catch (error) {
         console.error('Unable to clear manual rejoin state.', error);
         setRoomError('无法清除暂离状态。');
@@ -446,10 +446,10 @@ function handleRoomMessage(message: ServerMessage): void {
         playerId.value = message.playerId;
         playerIdInput.value = message.playerId;
         try {
-            localStorage.setItem(PLAYER_ID_STORAGE_KEY, message.playerId);
+            sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, message.playerId);
             if (previousPlayerId && previousPlayerId !== message.playerId && !pendingLobbyAction) {
                 savedResumeRoomCode = null;
-                localStorage.removeItem(ROOM_CODE_STORAGE_KEY);
+                sessionStorage.removeItem(ROOM_CODE_STORAGE_KEY);
                 setRoomError('玩家身份与已保存的房间信息不匹配，请重新加入房间。');
             }
         } catch (error) {
@@ -491,8 +491,8 @@ function handleRoomMessage(message: ServerMessage): void {
         roomError.value = '';
         savedResumeRoomCode = null;
         try {
-            localStorage.removeItem(ROOM_CODE_STORAGE_KEY);
-            localStorage.removeItem(MANUAL_REJOIN_STORAGE_KEY);
+            sessionStorage.removeItem(ROOM_CODE_STORAGE_KEY);
+            sessionStorage.removeItem(MANUAL_REJOIN_STORAGE_KEY);
         } catch (error) {
             console.error('Unable to clear saved room identity.', error);
             setRoomError('无法清除已保存的房间信息。');
@@ -538,7 +538,7 @@ function handleRoomMessage(message: ServerMessage): void {
         roomCode.value = message.room.code;
         savedResumeRoomCode = message.room.code;
         try {
-            localStorage.setItem(ROOM_CODE_STORAGE_KEY, message.room.code);
+            sessionStorage.setItem(ROOM_CODE_STORAGE_KEY, message.room.code);
         } catch (error) {
             console.error('Unable to persist room identity.', error);
             setRoomError('无法保存房间信息，刷新后可能无法自动恢复房间。');
@@ -756,8 +756,8 @@ function leaveRoom(): void {
         isTemporarilyAway.value = true;
         roomCodeInput.value = roomCode.value;
         try {
-            localStorage.setItem(MANUAL_REJOIN_STORAGE_KEY, 'true');
-            localStorage.setItem(ROOM_CODE_STORAGE_KEY, roomCode.value);
+            sessionStorage.setItem(MANUAL_REJOIN_STORAGE_KEY, 'true');
+            sessionStorage.setItem(ROOM_CODE_STORAGE_KEY, roomCode.value);
         } catch (error) {
             console.error('Unable to save room rejoin information.', error);
             setRoomError('无法保存房间号，暂离后可能无法恢复本局。');
@@ -894,16 +894,16 @@ onMounted(() => {
         return;
     }
     try {
-        const savedPlayerId = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
+        const savedPlayerId = sessionStorage.getItem(PLAYER_ID_STORAGE_KEY);
         playerId.value = savedPlayerId && PLAYER_ID_PATTERN.test(savedPlayerId)
             ? savedPlayerId
             : crypto.randomUUID();
         playerIdInput.value = playerId.value;
-        const savedRoomCode = localStorage.getItem(ROOM_CODE_STORAGE_KEY);
+        const savedRoomCode = sessionStorage.getItem(ROOM_CODE_STORAGE_KEY);
         savedResumeRoomCode = savedRoomCode && ROOM_CODE_PATTERN.test(savedRoomCode)
             ? savedRoomCode
             : null;
-        if (localStorage.getItem(MANUAL_REJOIN_STORAGE_KEY) === 'true') {
+        if (sessionStorage.getItem(MANUAL_REJOIN_STORAGE_KEY) === 'true') {
             isTemporarilyAway.value = true;
             roomCodeInput.value = savedResumeRoomCode ?? '';
             savedResumeRoomCode = null;

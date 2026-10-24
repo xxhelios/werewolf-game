@@ -1465,6 +1465,7 @@ webSocketServer.on('connection', (socket, request) => {
         playerId: client.id,
         resumedRoom: Boolean(existingPlayer)
     });
+    send(client, availableRoomsMessage());
     if (existingPlayer) {
         broadcastRoomState(existingPlayer.room);
         if (existingPlayer.room.started) {
