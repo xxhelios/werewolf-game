@@ -249,7 +249,7 @@ function startHiddenActionDelay(room, advanceAfterDelay = false) {
     );
     room.hiddenActionDelayTimer = setTimeout(() => {
         room.hiddenActionDelayTimer = null;
-        if (advanceAfterDelay) advanceGamePhase(room);
+        if (advanceAfterDelay) beginPhaseCountdown(room);
         else startReadyCountdown(room);
     }, delaySeconds * 1000);
     room.hiddenActionDelayTimer.unref();
@@ -729,6 +729,12 @@ function startReadyCountdown(room) {
         return;
     }
 
+    room.countdownEndsAt = Date.now() + READY_COUNTDOWN_SECONDS * 1000;
+    beginPhaseCountdown(room);
+}
+
+function beginPhaseCountdown(room) {
+    if (room.countdownTimer) return;
     room.countdownEndsAt = Date.now() + READY_COUNTDOWN_SECONDS * 1000;
     room.countdownSeconds = READY_COUNTDOWN_SECONDS;
     broadcastGameProgress(room);
