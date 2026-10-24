@@ -77,6 +77,7 @@ function isGamePhase(value: unknown): value is ActiveGamePhase {
         || value === 'NIGHT_WEREWOLF'
         || value === 'NIGHT_WITCH'
         || value === 'NIGHT_SEER'
+        || value === 'NIGHT_LOVER_PICK'
         || value === 'NIGHT_LOVER'
         || value === 'DAY_DEATH_SPEECH'
         || value === 'DAY_VOTE'

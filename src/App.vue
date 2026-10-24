@@ -137,10 +137,11 @@ const roleCountTags = computed(() => {
 const phaseTitle = computed(() => ({
     LOBBY: '等待玩家',
     ROLE_REVEAL: '查看身份 · 准备开始',
-    NIGHT_WEREWOLF: '第一步 · 狼人行动 🐺',
-    NIGHT_WITCH: '第二步 · 女巫行动 🧪',
-    NIGHT_SEER: '第三步 · 预言家查验 🔮',
-    NIGHT_LOVER: '第四步 · 恋爱脑行动 💘',
+    NIGHT_LOVER_PICK: '恋爱脑选择心动对象 💘',
+    NIGHT_WEREWOLF: '狼人行动 🐺',
+    NIGHT_LOVER: '恋爱脑行动 💘',
+    NIGHT_WITCH: '女巫行动 🧪',
+    NIGHT_SEER: '预言家查验 🔮',
     DAY_DEATH_SPEECH: '天亮了 · 昨夜淘汰玩家发言',
     DAY_VOTE: '讨论与投票 ☀️',
     DAY_VOTE_RUNOFF: '平票加赛投票',
@@ -186,11 +187,15 @@ const phaseDescription = computed(() => {
             ? '每晚只能查验一位玩家，请谨慎选择；查验后点击“准备就绪”。'
             : '预言家查验中，请等待预言家完成行动。';
     }
-    if (phase.value === 'NIGHT_LOVER') {
-        if (currentPlayer.value?.role !== 'lover') return '恋爱脑行动中，请等待恋爱脑完成行动。';
-        return loverInfo.value?.nightNumber === 1
+    if (phase.value === 'NIGHT_LOVER_PICK') {
+        return currentPlayer.value?.role === 'lover'
             ? '请选择一名心动对象，选择后无法更改，你将得知对方的身份。'
-            : '请在下方三个选项中做出选择，选择后无法更改。';
+            : '恋爱脑行动中，请等待恋爱脑完成行动。';
+    }
+    if (phase.value === 'NIGHT_LOVER') {
+        return currentPlayer.value?.role === 'lover'
+            ? '请在下方选项中做出选择；选择保持清醒可继续保留技能，确认前可更改。'
+            : '恋爱脑行动中，请等待恋爱脑完成行动。';
     }
     if (phase.value === 'DAY_VOTE') return '请选择一位玩家投票，或不选择目标直接确认弃权。投票内容不会公开。';
     if (phase.value === 'DAY_VOTE_RUNOFF') return '最高票出现平票。请仅在下方平票候选人中重新投票，或确认弃权。';
@@ -247,7 +252,7 @@ const canConfirmPhase = computed(() => {
     if (phase.value === 'NIGHT_WEREWOLF') return player.role === 'werewolf';
     if (phase.value === 'NIGHT_WITCH') return player.role === 'witch';
     if (phase.value === 'NIGHT_SEER') return player.role === 'seer';
-    if (phase.value === 'NIGHT_LOVER') return player.role === 'lover';
+    if (phase.value === 'NIGHT_LOVER' || phase.value === 'NIGHT_LOVER_PICK') return player.role === 'lover';
     return phase.value === 'ROLE_REVEAL'
         || phase.value === 'DAY_VOTE'
         || phase.value === 'DAY_VOTE_RUNOFF';
@@ -256,6 +261,7 @@ const phaseStatusMessages: Partial<Record<GamePhase, string>> = {
     NIGHT_WEREWOLF: '狼人行动中',
     NIGHT_WITCH: '女巫行动中',
     NIGHT_SEER: '预言家行动中',
+    NIGHT_LOVER_PICK: '恋爱脑行动中',
     NIGHT_LOVER: '恋爱脑行动中'
 };
 const phaseStatusMessage = computed(() => phaseStatusMessages[phase.value] ?? '');
@@ -283,7 +289,7 @@ const canReady = computed(() => {
     if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !wolfTargetIsUnanimous.value) {
         return false;
     }
-    if (phase.value === 'NIGHT_LOVER' && player.role === 'lover' && !loverActionDone.value) {
+    if (['NIGHT_LOVER', 'NIGHT_LOVER_PICK'].includes(phase.value) && player.role === 'lover' && !loverActionDone.value) {
         return false;
     }
     return phase.value !== 'GAME_OVER';
@@ -297,7 +303,7 @@ const loverOptions = computed(() => ({
 const loverActionDone = computed(() => {
     const info = loverInfo.value;
     if (!info) return false;
-    if (info.nightNumber === 1) return info.targetId !== null;
+    if (phase.value === 'NIGHT_LOVER_PICK') return info.targetId !== null;
     return info.choice !== null
         || (!loverOptions.value.canSubstitute && !loverOptions.value.canConvert);
 });
@@ -611,6 +617,7 @@ function handleRoomMessage(message: ServerMessage): void {
                 NIGHT_WEREWOLF: '进入狼人行动阶段。',
                 NIGHT_WITCH: '进入女巫行动阶段。',
                 NIGHT_SEER: '进入预言家查验阶段。',
+                NIGHT_LOVER_PICK: '夜幕降临，恋爱脑先行动。',
                 NIGHT_LOVER: '进入恋爱脑行动阶段。',
                 DAY_DEATH_SPEECH: '天亮了，昨夜淘汰的玩家开始发言。',
                 DAY_VOTE: '进入讨论与投票阶段。',
@@ -836,15 +843,15 @@ function selectSeerTarget(player: Player): void {
 function selectLoverTarget(player: Player): void {
     if (!canChooseAction.value
         || currentPlayer.value?.role !== 'lover'
-        || loverInfo.value?.nightNumber !== 1
-        || loverInfo.value.targetId) return;
+        || phase.value !== 'NIGHT_LOVER_PICK'
+        || loverInfo.value?.targetId) return;
     sendRoomMessage({ type: 'game-action', action: 'lover-target', targetId: player.id });
 }
 
 function chooseLoverOption(choice: LoverChoice): void {
     if (!canChooseAction.value
         || currentPlayer.value?.role !== 'lover'
-        || loverInfo.value?.nightNumber !== 2) return;
+        || phase.value !== 'NIGHT_LOVER') return;
     sendRoomMessage({ type: 'game-action', action: 'lover-choice', choice });
 }
 
@@ -1256,8 +1263,8 @@ onUnmounted(() => {
                                 查验结果：{{ ROLE_INFO[seerResult].name }}
                             </Message>
                         </div>
-                        <div v-else-if="phase === 'NIGHT_LOVER' && currentPlayer?.role === 'lover' && currentPlayer.isAlive && loverInfo" class="lover-panel">
-                            <template v-if="loverInfo.nightNumber === 1">
+                        <div v-else-if="['NIGHT_LOVER', 'NIGHT_LOVER_PICK'].includes(phase) && currentPlayer?.role === 'lover' && currentPlayer.isAlive && loverInfo" class="lover-panel">
+                            <template v-if="phase === 'NIGHT_LOVER_PICK'">
                                 <div class="action-row">
                                     <Button
                                         v-for="player in aliveTargets"
@@ -1309,15 +1316,15 @@ onUnmounted(() => {
                                     当前选择：{{ ({ substitute: '替死', convert: '爱的感化', abstain: '保持清醒' })[loverInfo.choice] }}（确认前可更改）
                                 </Message>
                                 <small>
-                                    替死：仅当心动对象今晚会被杀死时可用，你将代替对方死亡。
-                                    爱的感化：仅当对象是狼人且今晚不会被杀死时可用，对方变为平民，你会死亡。
-                                    保持清醒：不做任何事，天亮后变为普通平民。
+                                    替死：仅当心动对象今晚被狼人袭击时可用，你将代替对方被袭击（女巫仍可救你）。
+                                    爱的感化：仅当对象是狼人且今晚没被袭击时可用，对方变为平民，你会死亡。
+                                    保持清醒：不使用技能，之后每晚仍可选择。
                                 </small>
                             </template>
                             <Message v-if="loverInfo.targetId" severity="info" :closable="false" class="action-result">
                                 心动对象：{{ loverTargetName }}（{{ loverInfo.targetRole ? ROLE_INFO[loverInfo.targetRole].name : '未知' }}）
-                                <template v-if="loverInfo.nightNumber === 2 && loverInfo.targetAlive">
-                                    ；今晚{{ loverInfo.targetInDanger ? '将被杀死' : '不会被杀死' }}
+                                <template v-if="phase === 'NIGHT_LOVER' && loverInfo.targetAlive">
+                                    ；今晚{{ loverInfo.targetInDanger ? '被狼人袭击' : '未被狼人袭击' }}
                                 </template>
                             </Message>
                         </div>

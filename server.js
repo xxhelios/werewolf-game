@@ -58,9 +58,16 @@ function phaseParticipants(room) {
     const actingRole = {
         NIGHT_WEREWOLF: 'werewolf',
         NIGHT_WITCH: 'witch',
-        NIGHT_SEER: 'seer',
-        NIGHT_LOVER: 'lover'
+        NIGHT_SEER: 'seer'
     }[room.phase];
+    if (room.phase === 'NIGHT_LOVER_PICK') {
+        return room.nightNumber === 1
+            ? livingOnlinePlayers.filter(player => player.id === room.loverId)
+            : [];
+    }
+    if (room.phase === 'NIGHT_LOVER') {
+        return livingOnlinePlayers.filter(player => player.id === room.loverId && loverCanAct(room));
+    }
     if (!actingRole) return livingOnlinePlayers;
     return livingOnlinePlayers.filter(player =>
         room.gamePlayers.find(candidate => candidate.id === player.id)?.role === actingRole
@@ -194,7 +201,7 @@ function gameProgressFor(room, client, isSpectator = false) {
         countdownSeconds: room.countdownSeconds,
         role: isSpectator ? null : gamePlayer?.role ?? null,
         wolfTargetId: !isSpectator && gamePlayer?.role === 'witch' && room.phase === 'NIGHT_WITCH'
-            ? room.wolfTargetId
+            ? nightVictimId(room)
             : null,
         witchPotions: !isSpectator && gamePlayer?.role === 'witch'
             ? { saveUsed: room.witchPotions.saveUsed, poisonUsed: room.witchPotions.poisonUsed }
@@ -254,7 +261,7 @@ function phaseActionsComplete(room) {
     if (room.phase === 'DAY_VOTE' || room.phase === 'DAY_VOTE_RUNOFF') {
         return phaseParticipants(room).every(player => room.votes.has(player.id));
     }
-    if (room.phase === 'NIGHT_LOVER') return loverActionComplete(room);
+    if (room.phase === 'NIGHT_LOVER' || room.phase === 'NIGHT_LOVER_PICK') return loverActionComplete(room);
     if (room.phase === 'DAY_VOTE_RESULT') return !room.hunterShotPending && !room.loverDecisionPending;
     if (room.phase === 'GAME_OVER') return false;
     return true;
@@ -286,25 +293,43 @@ function validLivingTarget(room, targetId) {
         && room.gamePlayers.some(player => player.id === targetId && player.isAlive);
 }
 
+function loverCanAct(room) {
+    const lover = room.gamePlayers.find(player => player.id === room.loverId);
+    const target = room.gamePlayers.find(player => player.id === room.loverTargetId);
+    return Boolean(
+        lover?.isAlive
+        && lover.role === 'lover'
+        && !room.loverSkillUsed
+        && target?.isAlive
+    );
+}
+
+function nightVictimId(room) {
+    const substituted = room.loverChoice === 'substitute'
+        && room.wolfTargetId
+        && room.wolfTargetId === room.loverTargetId
+        && loverCanAct(room);
+    return substituted ? room.loverId : room.wolfTargetId;
+}
+
 function loverOptions(room) {
     const target = room.gamePlayers.find(player => player.id === room.loverTargetId && player.isAlive);
-    if (!target) return { canSubstitute: false, canConvert: false };
+    if (!target || !loverCanAct(room)) return { canSubstitute: false, canConvert: false };
+    const inDanger = loverTargetInDanger(room);
     return {
-        canSubstitute: loverTargetInDanger(room),
-        canConvert: target.role === 'werewolf' && !loverTargetInDanger(room)
+        canSubstitute: inDanger,
+        canConvert: target.role === 'werewolf' && !inDanger
     };
 }
 
 function loverTargetInDanger(room) {
     const target = room.gamePlayers.find(player => player.id === room.loverTargetId && player.isAlive);
-    if (!target) return false;
-    const attacked = room.wolfTargetId === target.id && room.witchSaveTargetId !== target.id;
-    return attacked || room.witchPoisonTargetId === target.id;
+    return Boolean(target && room.wolfTargetId === target.id);
 }
 
 function loverActionComplete(room) {
     if (phaseParticipants(room).length === 0) return true;
-    if (room.nightNumber === 1) return room.loverTargetId !== null;
+    if (room.phase === 'NIGHT_LOVER_PICK') return room.loverTargetId !== null;
     const { canSubstitute, canConvert } = loverOptions(room);
     return room.loverChoice !== null || (!canSubstitute && !canConvert);
 }
@@ -393,8 +418,8 @@ function resolveRound(room, isRunoff = false) {
     const loverForDecision = room.gamePlayers.find(player => player.id === room.loverId && player.isAlive);
     room.loverDecisionPending = Boolean(
         loverForDecision
-        && room.nightNumber === 1
-        && !room.loverReverted
+        && loverForDecision.role === 'lover'
+        && !room.loverSkillUsed
         && room.loverTargetId
         && voteEliminatedIds.has(room.loverTargetId)
     );
@@ -467,6 +492,7 @@ function resolveLoverDecision(room, client, substitute) {
     });
     const voteResult = room.voteResults.find(result => result.targetId === target.id);
     if (substitute) {
+        room.loverSkillUsed = true;
         target.isAlive = true;
         lover.isAlive = false;
         lover.diedForLove = true;
@@ -501,24 +527,21 @@ function resolveLoverDecision(room, client, substitute) {
     startReadyCountdown(room);
 }
 
-function applyLoverChoice(room, eliminatedIds) {
-    if (room.nightNumber !== 2) return;
-    const lover = room.gamePlayers.find(player => player.id === room.loverId && player.isAlive);
-    if (!lover) return;
-    const target = room.gamePlayers.find(player => player.id === room.loverTargetId && player.isAlive);
-    const { canSubstitute, canConvert } = loverOptions(room);
-    if (target && room.loverChoice === 'substitute' && canSubstitute) {
-        eliminatedIds.delete(target.id);
-        eliminatedIds.add(lover.id);
-    } else if (target && room.loverChoice === 'convert' && canConvert) {
-        target.role = 'villager';
-        room.loverConvertedId = target.id;
-        eliminatedIds.add(lover.id);
+function applyLoverNight(room, eliminatedIds) {
+    const lover = room.gamePlayers.find(player => player.id === room.loverId);
+    const target = room.gamePlayers.find(player => player.id === room.loverTargetId);
+    let converted = false;
+    if (room.loverChoice === 'convert' && lover?.isAlive && target?.isAlive) {
+        const { canConvert } = loverOptions(room);
+        if (canConvert) {
+            target.role = 'villager';
+            room.loverConvertedId = target.id;
+            room.loverSkillUsed = true;
+            eliminatedIds.add(lover.id);
+            converted = true;
+        }
     }
-    if (!eliminatedIds.has(lover.id)) {
-        lover.role = 'villager';
-        room.loverReverted = true;
-    }
+    return converted;
 }
 
 function resolveNight(room) {
@@ -534,14 +557,22 @@ function resolveNight(room) {
     room.wolfTargetId = wolfWinners.length === 1 && highestWolfVotes > 0 ? wolfWinners[0][0] : null;
 
     const eliminatedIds = new Set();
-    const wolfAttackWasSaved = Boolean(
-        room.wolfTargetId && room.witchSaveTargetId === room.wolfTargetId
-    );
-    if (room.wolfTargetId && !wolfAttackWasSaved) {
-        eliminatedIds.add(room.wolfTargetId);
+    const victimId = nightVictimId(room);
+    const substituted = victimId !== null && victimId === room.loverId && room.wolfTargetId !== victimId;
+    const wolfAttackWasSaved = Boolean(victimId && room.witchSaveTargetId === victimId);
+    if (victimId && !wolfAttackWasSaved) {
+        eliminatedIds.add(victimId);
     }
     if (room.witchPoisonTargetId) eliminatedIds.add(room.witchPoisonTargetId);
-    applyLoverChoice(room, eliminatedIds);
+    if (substituted) {
+        room.loverSkillUsed = true;
+        if (wolfAttackWasSaved) {
+            const lover = room.gamePlayers.find(player => player.id === room.loverId);
+            lover.role = 'villager';
+            room.loverReverted = true;
+        }
+    }
+    const converted = applyLoverNight(room, eliminatedIds);
     room.nightEliminatedPlayerIds = [...eliminatedIds];
     room.eliminatedPlayerIds = [...eliminatedIds];
     room.gamePlayers.forEach(player => {
@@ -559,7 +590,7 @@ function resolveNight(room) {
                 ? '天亮了，昨夜无人淘汰。'
                 : '天亮了，昨夜无人淘汰（狼人未形成有效袭击目标）。'
     });
-    if (room.nightNumber === 2 && room.loverConvertedId) {
+    if (converted) {
         broadcastRoomEvent(room, {
             playerId: null,
             text: '恋爱脑以爱感化了一名狼人，狼人净化为平民，恋爱脑为爱赴死。'
@@ -619,11 +650,12 @@ function advanceGamePhase(room) {
         return;
     }
     const nextPhases = {
-        ROLE_REVEAL: 'NIGHT_WEREWOLF',
-        NIGHT_WEREWOLF: 'NIGHT_WITCH',
+        ROLE_REVEAL: room.loverId ? 'NIGHT_LOVER_PICK' : 'NIGHT_WEREWOLF',
+        NIGHT_LOVER_PICK: 'NIGHT_WEREWOLF',
+        NIGHT_WEREWOLF: 'NIGHT_LOVER',
+        NIGHT_LOVER: 'NIGHT_WITCH',
         NIGHT_WITCH: 'NIGHT_SEER',
-        NIGHT_SEER: 'NIGHT_LOVER',
-        NIGHT_LOVER: 'DAY_VOTE',
+        NIGHT_SEER: 'DAY_VOTE',
         DAY_DEATH_SPEECH: 'DAY_VOTE'
     };
     if (!nextPhases[room.phase]) return;
@@ -631,8 +663,8 @@ function advanceGamePhase(room) {
         room.witchPotions.saveUsed = room.witchPotions.saveUsed || room.witchSaveTargetId !== null;
         room.witchPotions.poisonUsed = room.witchPotions.poisonUsed || room.witchPoisonTargetId !== null;
     }
-    const nightWinner = room.phase === 'NIGHT_LOVER' ? resolveNight(room) : null;
-    const hasOnlineNightEliminations = room.phase === 'NIGHT_LOVER'
+    const nightWinner = room.phase === 'NIGHT_SEER' ? resolveNight(room) : null;
+    const hasOnlineNightEliminations = room.phase === 'NIGHT_SEER'
         && room.nightEliminatedPlayerIds.some(id =>
             room.players.some(player =>
                 player.id === id && player.socket?.readyState === WebSocket.OPEN
@@ -653,11 +685,12 @@ function advanceGamePhase(room) {
         text: nightWinner
             ? `游戏结束：${nightWinner}！`
             : ({
-            NIGHT_WITCH: '狼人行动结束，进入女巫行动阶段。',
+            NIGHT_LOVER_PICK: '夜幕降临，恋爱脑先行动，选择心动对象。',
+            NIGHT_WEREWOLF: '进入狼人行动阶段。',
+            NIGHT_LOVER: '狼人行动结束，进入恋爱脑行动阶段。',
+            NIGHT_WITCH: '恋爱脑行动结束，进入女巫行动阶段。',
             NIGHT_SEER: '女巫行动结束，进入预言家查验阶段。',
-            NIGHT_LOVER: '预言家行动结束，进入恋爱脑行动阶段。',
-            DAY_VOTE: '夜晚行动结束，进入讨论与投票阶段。',
-            NIGHT_WEREWOLF: '夜幕降临，进入狼人行动阶段。'
+            DAY_VOTE: '夜晚行动结束，进入讨论与投票阶段。'
         })[room.phase] || '游戏阶段已更新。'
     });
     startReadyCountdown(room);
@@ -857,6 +890,7 @@ function beginGame(room, initiator) {
     room.loverChoice = null;
     room.loverConvertedId = null;
     room.loverReverted = false;
+    room.loverSkillUsed = false;
     room.loverDecisionPending = false;
     const roles = shuffledRoles(room.players.length);
     room.roleCounts = roleCountsFor(roles);
@@ -1087,8 +1121,8 @@ function handleMessage(client, message) {
             sendError(client, '请等待恋爱脑做出抉择。');
             return;
         }
-        if (message.isReady && room.phase === 'NIGHT_LOVER' && !loverActionComplete(room)) {
-            sendError(client, room.nightNumber === 1 ? '请先选择心动对象。' : '请先做出选择。');
+        if (message.isReady && ['NIGHT_LOVER', 'NIGHT_LOVER_PICK'].includes(room.phase) && !loverActionComplete(room)) {
+            sendError(client, room.phase === 'NIGHT_LOVER_PICK' ? '请先选择心动对象。' : '请先做出选择。');
             return;
         }
         if (
@@ -1235,8 +1269,8 @@ function handleMessage(client, message) {
                 sendError(client, '药剂目标无效。');
                 return;
             } else if (potion === 'save') {
-                if (targetId !== room.wolfTargetId) {
-                    sendError(client, '解药只能救助今晚被狼人袭击的玩家。');
+                if (targetId !== nightVictimId(room)) {
+                    sendError(client, '解药只能救助今晚被袭击的玩家。');
                     return;
                 }
                 room.witchSaveTargetId = targetId;
@@ -1259,7 +1293,7 @@ function handleMessage(client, message) {
             room.seerTargetId = targetId;
             room.seerResult = room.gamePlayers.find(player => player.id === targetId)?.role ?? null;
         } else if (action === 'lover-target') {
-            if (room.phase !== 'NIGHT_LOVER' || gamePlayer.role !== 'lover' || room.nightNumber !== 1) {
+            if (room.phase !== 'NIGHT_LOVER_PICK' || gamePlayer.role !== 'lover') {
                 sendError(client, '当前阶段不能选择心动对象。');
                 return;
             }
@@ -1273,7 +1307,7 @@ function handleMessage(client, message) {
             }
             room.loverTargetId = targetId;
         } else if (action === 'lover-choice') {
-            if (room.phase !== 'NIGHT_LOVER' || gamePlayer.role !== 'lover' || room.nightNumber !== 2) {
+            if (room.phase !== 'NIGHT_LOVER' || gamePlayer.role !== 'lover' || !loverCanAct(room)) {
                 sendError(client, '当前阶段不能做出恋爱脑选择。');
                 return;
             }
