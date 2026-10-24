@@ -440,6 +440,14 @@ function clearManualRejoinFlag(): void {
 }
 
 function refreshAvailableRooms(): void {
+    if (roomListSocket) {
+        if (roomListSocket.readyState === WebSocket.OPEN) roomListSocket.send(JSON.stringify({ type: 'list-rooms' }));
+        return;
+    }
+    if (isTemporarilyAway.value && connectionState.value !== 'connected') {
+        startRoomListWatcher();
+        return;
+    }
     sendRoomMessage({ type: 'list-rooms' });
 }
 
@@ -671,8 +679,48 @@ function updateGamePlayers(
     }));
 }
 
+let roomListSocket: WebSocket | null = null;
+let roomListTimer: ReturnType<typeof setTimeout> | null = null;
+
+function stopRoomListWatcher(): void {
+    if (roomListTimer) clearTimeout(roomListTimer);
+    roomListTimer = null;
+    if (roomListSocket) {
+        const socket = roomListSocket;
+        roomListSocket = null;
+        socket.close();
+    }
+}
+
+// 暂离房间时不占用玩家身份，只用匿名连接保持房间列表更新。
+function startRoomListWatcher(): void {
+    if (componentUnmounted || roomListSocket) return;
+    if (!__WEBSOCKET_URL__ && window.location.hostname.endsWith('.github.io')) return;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(new URL(__WEBSOCKET_URL__ || `${protocol}//${window.location.host}`));
+    roomListSocket = socket;
+    socket.addEventListener('message', event => {
+        try {
+            const message = parseServerMessage(JSON.parse(String(event.data)));
+            if (message?.type === 'available-rooms') availableRooms.value = message.rooms;
+        } catch (error) {
+            console.error('Unable to parse room list message.', error);
+        }
+    });
+    socket.addEventListener('close', () => {
+        if (roomListSocket !== socket) return;
+        roomListSocket = null;
+        if (componentUnmounted || !isTemporarilyAway.value) return;
+        roomListTimer = setTimeout(() => {
+            roomListTimer = null;
+            startRoomListWatcher();
+        }, 3000);
+    });
+}
+
 function connectToRoomService(): void {
     if (componentUnmounted) return;
+    stopRoomListWatcher();
     const isGitHubPages = window.location.hostname.endsWith('.github.io');
     if (!__WEBSOCKET_URL__ && isGitHubPages) {
         connectionState.value = 'failed';
@@ -781,6 +829,7 @@ function leaveRoom(): void {
             roomConnection = null;
         }
         connectionState.value = 'disconnected';
+        startRoomListWatcher();
         return;
     }
     sendRoomMessage({ type: 'leave-room' });
@@ -916,6 +965,7 @@ onMounted(() => {
             roomCodeInput.value = savedResumeRoomCode ?? '';
             savedResumeRoomCode = null;
             connectionState.value = 'disconnected';
+            startRoomListWatcher();
             return;
         }
     } catch (error) {
@@ -929,6 +979,7 @@ onMounted(() => {
 onUnmounted(() => {
     componentUnmounted = true;
     if (reconnectTimer) clearTimeout(reconnectTimer);
+    stopRoomListWatcher();
     roomConnection?.close();
 });
 </script>
@@ -996,7 +1047,7 @@ onUnmounted(() => {
                                     severity="secondary"
                                     text
                                     size="small"
-                                    :disabled="connectionState !== 'connected'"
+                                    :disabled="connectionState !== 'connected' && !isTemporarilyAway"
                                     @click="refreshAvailableRooms"
                                 />
                             </div>
@@ -1013,7 +1064,7 @@ onUnmounted(() => {
                                 />
                             </div>
                             <p v-else class="available-room-empty">
-                                {{ connectionState === 'connected' ? '目前没有可加入的房间。' : '连接房间服务后显示。' }}
+                                {{ connectionState === 'connected' || isTemporarilyAway ? '目前没有可加入的房间。' : '连接房间服务后显示。' }}
                             </p>
                             <small>点击房间号填入上方输入框，再选择加入游戏或观战。</small>
                             <small class="player-id-label">
