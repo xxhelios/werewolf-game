@@ -558,6 +558,12 @@ function resolveNight(room) {
                 ? '天亮了，昨夜无人淘汰。'
                 : '天亮了，昨夜无人淘汰（狼人未形成有效袭击目标）。'
     });
+    if (room.nightNumber === 2 && room.loverConvertedId) {
+        broadcastRoomEvent(room, {
+            playerId: null,
+            text: '恋爱脑以爱感化了一名狼人，狼人净化为平民，恋爱脑为爱赴死。'
+        });
+    }
     return winnerFor(room);
 }
 
