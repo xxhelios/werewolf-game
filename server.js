@@ -44,7 +44,7 @@ function broadcastAvailableRooms() {
 function phaseParticipants(room) {
     const livingOnlinePlayers = connectedPlayers(room);
     if (room.phase === 'DAY_VOTE_RESULT') {
-        return room.players.filter(player => player.socket?.readyState === WebSocket.OPEN);
+        return livingOnlinePlayers;
     }
     if (room.phase === 'DAY_DEATH_SPEECH') {
         return room.players.filter(player =>
@@ -164,7 +164,8 @@ function gameProgressFor(room, client, isSpectator = false) {
             diedForLove: Boolean(player.diedForLove),
             isConnected: Boolean(roomPlayer?.socket && roomPlayer.socket.readyState === WebSocket.OPEN),
             isReady: ['ROLE_REVEAL', 'DAY_DEATH_SPEECH', 'DAY_VOTE', 'DAY_VOTE_RUNOFF', 'DAY_VOTE_RESULT'].includes(room.phase)
-                && room.readyPlayerIds.has(player.id)
+                ? room.readyPlayerIds.has(player.id)
+                : !isSpectator && player.id === client.id && room.readyPlayerIds.has(player.id)
         };
     });
     const loverTarget = room.gamePlayers.find(player => player.id === room.loverTargetId);
@@ -290,7 +291,7 @@ function loverOptions(room) {
     if (!target) return { canSubstitute: false, canConvert: false };
     return {
         canSubstitute: loverTargetInDanger(room),
-        canConvert: target.role === 'werewolf'
+        canConvert: target.role === 'werewolf' && !loverTargetInDanger(room)
     };
 }
 
@@ -1274,10 +1275,6 @@ function handleMessage(client, message) {
         } else if (action === 'lover-choice') {
             if (room.phase !== 'NIGHT_LOVER' || gamePlayer.role !== 'lover' || room.nightNumber !== 2) {
                 sendError(client, '当前阶段不能做出恋爱脑选择。');
-                return;
-            }
-            if (room.loverChoice !== null) {
-                sendError(client, '你已经做出选择，无法更改。');
                 return;
             }
             const { canSubstitute, canConvert } = loverOptions(room);

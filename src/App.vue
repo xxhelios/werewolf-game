@@ -207,7 +207,7 @@ const canStartGame = computed(() =>
 );
 const phaseReadyPlayers = computed(() => players.value.filter(player =>
     player.isConnected
-    && (phase.value === 'DAY_VOTE_RESULT' || player.isAlive)
+    && player.isAlive
 ));
 const readyPlayerCount = computed(() => phaseReadyPlayers.value.filter(player => player.isReady).length);
 const connectedPlayerCount = computed(() => phaseReadyPlayers.value.length);
@@ -236,7 +236,7 @@ const readyButtonLabel = computed(() => {
 });
 const canConfirmPhase = computed(() => {
     const player = currentPlayer.value;
-    if (phase.value === 'DAY_VOTE_RESULT') return Boolean(player);
+    if (phase.value === 'DAY_VOTE_RESULT') return Boolean(player?.isAlive);
     if (
         phase.value === 'DAY_DEATH_SPEECH'
         && player
@@ -290,7 +290,9 @@ const canReady = computed(() => {
 });
 const loverOptions = computed(() => ({
     canSubstitute: Boolean(loverInfo.value?.targetAlive && loverInfo.value.targetInDanger),
-    canConvert: Boolean(loverInfo.value?.targetAlive && loverInfo.value.targetRole === 'werewolf')
+    canConvert: Boolean(loverInfo.value?.targetAlive
+        && loverInfo.value.targetRole === 'werewolf'
+        && !loverInfo.value.targetInDanger)
 }));
 const loverActionDone = computed(() => {
     const info = loverInfo.value;
@@ -842,8 +844,7 @@ function selectLoverTarget(player: Player): void {
 function chooseLoverOption(choice: LoverChoice): void {
     if (!canChooseAction.value
         || currentPlayer.value?.role !== 'lover'
-        || loverInfo.value?.nightNumber !== 2
-        || loverInfo.value.choice) return;
+        || loverInfo.value?.nightNumber !== 2) return;
     sendRoomMessage({ type: 'game-action', action: 'lover-choice', choice });
 }
 
@@ -1274,32 +1275,39 @@ onUnmounted(() => {
                                 <div v-else class="action-row">
                                     <Button
                                         label="替死"
-                                        icon="pi pi-heart-fill"
+                                        :icon="loverInfo.choice === 'substitute' ? 'pi pi-check-circle' : 'pi pi-heart-fill'"
                                         severity="danger"
                                         :outlined="loverInfo.choice !== 'substitute'"
-                                        :disabled="!canChooseAction || loverInfo.choice !== null || !loverOptions.canSubstitute"
+                                        :class="{ 'lover-selected': loverInfo.choice === 'substitute' }"
+                                        :disabled="!canChooseAction || !loverOptions.canSubstitute"
                                         @click="chooseLoverOption('substitute')"
                                     />
                                     <Button
+                                        v-if="loverOptions.canConvert"
                                         label="爱的感化"
-                                        icon="pi pi-sparkles"
+                                        :icon="loverInfo.choice === 'convert' ? 'pi pi-check-circle' : 'pi pi-sparkles'"
                                         severity="help"
                                         :outlined="loverInfo.choice !== 'convert'"
-                                        :disabled="!canChooseAction || loverInfo.choice !== null || !loverOptions.canConvert"
+                                        :class="{ 'lover-selected': loverInfo.choice === 'convert' }"
+                                        :disabled="!canChooseAction"
                                         @click="chooseLoverOption('convert')"
                                     />
                                     <Button
                                         label="保持清醒"
-                                        icon="pi pi-eye"
+                                        :icon="loverInfo.choice === 'abstain' ? 'pi pi-check-circle' : 'pi pi-eye'"
                                         severity="secondary"
                                         :outlined="loverInfo.choice !== 'abstain'"
-                                        :disabled="!canChooseAction || loverInfo.choice !== null"
+                                        :class="{ 'lover-selected': loverInfo.choice === 'abstain' }"
+                                        :disabled="!canChooseAction"
                                         @click="chooseLoverOption('abstain')"
                                     />
                                 </div>
+                                <Message v-if="loverInfo.choice" severity="success" :closable="false">
+                                    当前选择：{{ ({ substitute: '替死', convert: '爱的感化', abstain: '保持清醒' })[loverInfo.choice] }}（确认前可更改）
+                                </Message>
                                 <small>
                                     替死：仅当心动对象今晚会被杀死时可用，你将代替对方死亡。
-                                    爱的感化：仅当对象是狼人时可用，对方变为平民，你会死亡。
+                                    爱的感化：仅当对象是狼人且今晚不会被杀死时可用，对方变为平民，你会死亡。
                                     保持清醒：不做任何事，天亮后变为普通平民。
                                 </small>
                             </template>
@@ -1878,6 +1886,15 @@ button, input {
 
 .ready-selected:enabled:active {
     background: #052e16 !important;
+}
+
+.lover-selected,
+.lover-selected:hover {
+    border-color: #facc15 !important;
+    background: #854d0e !important;
+    color: #fef9c3 !important;
+    box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.45);
+    font-weight: 700;
 }
 
 .player-item.is-dead {
