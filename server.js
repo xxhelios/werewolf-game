@@ -241,7 +241,7 @@ function clearHiddenActionDelay(room) {
     room.hiddenActionDelayTimer = null;
 }
 
-function startHiddenActionDelay(room) {
+function startHiddenActionDelay(room, advanceAfterDelay = false) {
     clearHiddenActionDelay(room);
     const delaySeconds = crypto.randomInt(
         HIDDEN_ACTION_DELAY_MIN_SECONDS,
@@ -249,9 +249,19 @@ function startHiddenActionDelay(room) {
     );
     room.hiddenActionDelayTimer = setTimeout(() => {
         room.hiddenActionDelayTimer = null;
-        startReadyCountdown(room);
+        if (advanceAfterDelay) advanceGamePhase(room);
+        else startReadyCountdown(room);
     }, delaySeconds * 1000);
     room.hiddenActionDelayTimer.unref();
+}
+
+// 角色已无法行动（死亡/技能用完），但身份尚未公开时，仍要假装行动以免泄露信息。
+function hiddenRoleStillSecret(room) {
+    if (room.phase === 'NIGHT_LOVER_PICK' || room.phase === 'NIGHT_LOVER') {
+        return !room.loverRevealed && room.gamePlayers.some(player => player.id === room.loverId);
+    }
+    const role = { NIGHT_WITCH: 'witch', NIGHT_SEER: 'seer' }[room.phase];
+    return Boolean(role) && room.gamePlayers.some(player => player.role === role);
 }
 
 function phaseActionsComplete(room) {
@@ -486,6 +496,7 @@ function resolveLoverDecision(room, client, substitute) {
     const lover = room.gamePlayers.find(player => player.id === client.id);
     const target = room.gamePlayers.find(player => player.id === room.loverTargetId);
     room.loverDecisionPending = false;
+    room.loverRevealed = true;
     room.readyPlayerIds.clear();
     room.gamePlayers.forEach(player => {
         player.isReady = false;
@@ -702,6 +713,10 @@ function startReadyCountdown(room) {
     const activePlayers = phaseParticipants(room);
     if (activePlayers.length === 0) {
         if (connectedPlayers(room).length === 0) return;
+        if (hiddenRoleStillSecret(room)) {
+            startHiddenActionDelay(room, true);
+            return;
+        }
         advanceGamePhase(room);
         return;
     }
@@ -890,6 +905,7 @@ function beginGame(room, initiator) {
     room.loverChoice = null;
     room.loverConvertedId = null;
     room.loverReverted = false;
+    room.loverRevealed = false;
     room.loverSkillUsed = false;
     room.loverDecisionPending = false;
     const roles = shuffledRoles(room.players.length);
