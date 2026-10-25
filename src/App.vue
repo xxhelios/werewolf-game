@@ -188,12 +188,12 @@ const phaseDescription = computed(() => {
             : '预言家查验中，请等待预言家完成行动。';
     }
     if (phase.value === 'NIGHT_LOVER_PICK') {
-        return currentPlayer.value?.role === 'lover'
+        return currentPlayer.value?.role === 'loveholic'
             ? '请选择一名心动对象，选择后无法更改，你将得知对方的身份。'
             : '恋爱脑行动中，请等待恋爱脑完成行动。';
     }
     if (phase.value === 'NIGHT_LOVER') {
-        return currentPlayer.value?.role === 'lover'
+        return currentPlayer.value?.role === 'loveholic'
             ? '请在下方选项中做出选择；选择保持清醒可继续保留技能，确认前可更改。'
             : '恋爱脑行动中，请等待恋爱脑完成行动。';
     }
@@ -257,7 +257,7 @@ const canConfirmPhase = computed(() => {
     if (phase.value === 'NIGHT_WEREWOLF') return player.role === 'werewolf';
     if (phase.value === 'NIGHT_WITCH') return player.role === 'witch';
     if (phase.value === 'NIGHT_SEER') return player.role === 'seer';
-    if (phase.value === 'NIGHT_LOVER' || phase.value === 'NIGHT_LOVER_PICK') return player.role === 'lover';
+    if (phase.value === 'NIGHT_LOVER' || phase.value === 'NIGHT_LOVER_PICK') return player.role === 'loveholic';
     if (phase.value === 'DAY_VOTE_RUNOFF') return !isRunoffCandidate.value;
     return phase.value === 'ROLE_REVEAL' || phase.value === 'DAY_VOTE';
 });
@@ -296,7 +296,7 @@ const canReady = computed(() => {
     if (phase.value === 'NIGHT_WEREWOLF' && player.role === 'werewolf' && !wolfTargetIsUnanimous.value) {
         return false;
     }
-    if (['NIGHT_LOVER', 'NIGHT_LOVER_PICK'].includes(phase.value) && player.role === 'lover' && !loverActionDone.value) {
+    if (['NIGHT_LOVER', 'NIGHT_LOVER_PICK'].includes(phase.value) && player.role === 'loveholic' && !loverActionDone.value) {
         return false;
     }
     return phase.value !== 'GAME_OVER';
@@ -531,18 +531,23 @@ function handleRoomMessage(message: ServerMessage): void {
         countdownSeconds.value = null;
         nightEliminatedPlayerIds.value = [];
         voteResults.value = [];
+        roundWinner.value = null;
         hunterShotPending.value = false;
         hunterId.value = null;
         hunterShotTargetId.value = null;
         selectedHunterShotTargetId.value = null;
-        roundWinner.value = null;
+        wolfTargetId.value = null;
         selectedWolfTargetId.value = null;
         selectedSaveTargetId.value = null;
         selectedPoisonTargetId.value = null;
         selectedSeerTargetId.value = null;
         selectedVoteTargetId.value = null;
+        seerResult.value = null;
+        witchPotions.value = { saveUsed: false, poisonUsed: false };
         loverInfo.value = null;
         loverNotice.value = null;
+        loverDecisionPending.value = false;
+        loverCanDecide.value = false;
         runoffCandidateIds.value = [];
         addLog('你已退出房间。');
         return;
@@ -898,7 +903,7 @@ function selectSeerTarget(player: Player): void {
 
 function selectLoverTarget(player: Player): void {
     if (!canChooseAction.value
-        || currentPlayer.value?.role !== 'lover'
+        || currentPlayer.value?.role !== 'loveholic'
         || phase.value !== 'NIGHT_LOVER_PICK'
         || loverInfo.value?.targetId) return;
     sendRoomMessage({ type: 'game-action', action: 'lover-target', targetId: player.id });
@@ -906,7 +911,7 @@ function selectLoverTarget(player: Player): void {
 
 function chooseLoverOption(choice: LoverChoice): void {
     if (!canChooseAction.value
-        || currentPlayer.value?.role !== 'lover'
+        || currentPlayer.value?.role !== 'loveholic'
         || phase.value !== 'NIGHT_LOVER') return;
     sendRoomMessage({ type: 'game-action', action: 'lover-choice', choice });
 }
@@ -1355,7 +1360,7 @@ onUnmounted(() => {
                                 查验结果：{{ ROLE_INFO[seerResult].name }}
                             </Message>
                         </div>
-                        <div v-else-if="['NIGHT_LOVER', 'NIGHT_LOVER_PICK'].includes(phase) && currentPlayer?.role === 'lover' && currentPlayer.isAlive && loverInfo" class="lover-panel">
+                        <div v-else-if="['NIGHT_LOVER', 'NIGHT_LOVER_PICK'].includes(phase) && currentPlayer?.role === 'loveholic' && currentPlayer.isAlive && loverInfo" class="lover-panel">
                             <template v-if="phase === 'NIGHT_LOVER_PICK'">
                                 <div class="action-row">
                                     <Button

@@ -182,7 +182,7 @@ function gameProgressFor(room, client, isSpectator = false) {
     const message = {
         type: 'game-progress',
         phase: room.phase,
-        lover: !isSpectator && gamePlayer?.role === 'lover'
+        lover: !isSpectator && gamePlayer?.role === 'loveholic'
             ? {
                 nightNumber: room.nightNumber,
                 targetId: room.loverTargetId,
@@ -311,7 +311,7 @@ function loverCanAct(room) {
     const target = room.gamePlayers.find(player => player.id === room.loverTargetId);
     return Boolean(
         lover?.isAlive
-        && lover.role === 'lover'
+        && lover.role === 'loveholic'
         && !room.loverSkillUsed
         && target?.isAlive
     );
@@ -431,7 +431,7 @@ function resolveRound(room, isRunoff = false) {
     const loverForDecision = room.gamePlayers.find(player => player.id === room.loverId && player.isAlive);
     room.loverDecisionPending = Boolean(
         loverForDecision
-        && loverForDecision.role === 'lover'
+        && loverForDecision.role === 'loveholic'
         && !room.loverSkillUsed
         && room.loverTargetId
         && voteEliminatedIds.has(room.loverTargetId)
@@ -827,7 +827,12 @@ function leaveRoom(client) {
     client.name = null;
     send(client, { type: 'left-room' });
 
-    if (room.players.length === 0 && !room.started) {
+    if (room.players.length === 0) {
+        room.spectators?.forEach(spectator => {
+            spectator.spectatingRoomCode = null;
+            send(spectator, { type: 'left-room' });
+        });
+        room.spectators = [];
         rooms.delete(room.code);
         broadcastAvailableRooms();
         return;
@@ -862,7 +867,7 @@ function shuffledRoles(playerCount) {
         'seer',
         'witch',
         ...(hasHunter ? ['hunter'] : []),
-        ...(hasLover ? ['lover'] : []),
+        ...(hasLover ? ['loveholic'] : []),
         ...Array(playerCount - wolfCount - 2 - Number(hasHunter) - Number(hasLover)).fill('villager')
     ];
     for (let i = roles.length - 1; i > 0; i -= 1) {
@@ -878,7 +883,7 @@ function roleCountsFor(roles) {
         seer: 0,
         witch: 0,
         hunter: 0,
-        lover: 0,
+        loveholic: 0,
         villager: 0
     };
     roles.forEach(role => {
@@ -927,7 +932,7 @@ function beginGame(room, initiator) {
         isReady: false,
         isConnected: Boolean(player.socket && player.socket.readyState === WebSocket.OPEN)
     }));
-    room.loverId = room.gamePlayers.find(player => player.role === 'lover')?.id ?? null;
+    room.loverId = room.gamePlayers.find(player => player.role === 'loveholic')?.id ?? null;
     room.players.forEach(player => send(player, {
         type: 'game-started',
         phase: room.phase,
@@ -1323,7 +1328,7 @@ function handleMessage(client, message) {
             room.seerTargetId = targetId;
             room.seerResult = room.gamePlayers.find(player => player.id === targetId)?.role ?? null;
         } else if (action === 'lover-target') {
-            if (room.phase !== 'NIGHT_LOVER_PICK' || gamePlayer.role !== 'lover') {
+            if (room.phase !== 'NIGHT_LOVER_PICK' || gamePlayer.role !== 'loveholic') {
                 sendError(client, '当前阶段不能选择心动对象。');
                 return;
             }
@@ -1337,7 +1342,7 @@ function handleMessage(client, message) {
             }
             room.loverTargetId = targetId;
         } else if (action === 'lover-choice') {
-            if (room.phase !== 'NIGHT_LOVER' || gamePlayer.role !== 'lover' || !loverCanAct(room)) {
+            if (room.phase !== 'NIGHT_LOVER' || gamePlayer.role !== 'loveholic' || !loverCanAct(room)) {
                 sendError(client, '当前阶段不能做出恋爱脑选择。');
                 return;
             }

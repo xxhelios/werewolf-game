@@ -113,7 +113,7 @@ function isRole(value: unknown): value is Role {
         || value === 'seer'
         || value === 'witch'
         || value === 'hunter'
-        || value === 'lover'
+        || value === 'loveholic'
         || value === 'villager';
 }
 

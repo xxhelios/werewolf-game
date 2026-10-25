@@ -1,4 +1,4 @@
-export type Role = 'werewolf' | 'seer' | 'witch' | 'hunter' | 'lover' | 'villager';
+export type Role = 'werewolf' | 'seer' | 'witch' | 'hunter' | 'loveholic' | 'villager';
 
 export type GamePhase =
     | 'LOBBY'
@@ -24,7 +24,7 @@ export const ROLE_INFO: Record<Role, { name: string; tip: string }> = {
     seer: { name: '🔮 预言家', tip: '每晚可以查验一名玩家的真实身份。' },
     witch: { name: '🧪 女巫', tip: '拥有一瓶解药和一瓶毒药（整局各一次）。' },
     hunter: { name: '🏹 猎人', tip: '被投票淘汰时，可以开枪带走一名仍存活的玩家，也可以选择不开枪。' },
-    lover: { name: '💘 恋爱脑', tip: '好人阵营。第一夜最先行动，选择一名心动对象（不可更改）并得知其身份。之后每晚、以及投票淘汰时，只要尚未使用技能，都可以选择替死或爱的感化狼人，也可保持清醒继续保留选择权。用过技能后若仍存活则变为平民。' },
+    loveholic: { name: '💘 恋爱脑', tip: '好人阵营。第一夜最先行动，选择一名心动对象（不可更改）并得知其身份。之后每晚、以及投票淘汰时，只要尚未使用技能，都可以选择替死或爱的感化狼人，也可保持清醒继续保留选择权。用过技能后若仍存活则变为平民。' },
     villager: { name: '🧑 平民', tip: '认真听取发言，通过投票找出狼人。' }
 };
 
